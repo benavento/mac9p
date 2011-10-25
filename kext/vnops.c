@@ -9,7 +9,7 @@ static char fsname[MFSNAMELEN] = VFS9PNAME;
 __private_extern__ void
 nlock_9p(node_9p *np, lcktype_9p type)
 {
-	DEBUG("%p: %s", np, type==NODE_LCK_SHARED? "shared": "exclusive");
+//	DEBUG("%p: %s", np, type==NODE_LCK_SHARED? "shared": "exclusive");
 	if (type == NODE_LCK_SHARED)
 		lck_rw_lock_shared(np->lck);
 	else
@@ -20,14 +20,14 @@ nlock_9p(node_9p *np, lcktype_9p type)
 __private_extern__ void
 nunlock_9p(node_9p *np)
 {
-	DEBUG("%p", np);
+//	DEBUG("%p", np);
 	switch (np->lcktype) {
 	case NODE_LCK_SHARED:
 		lck_rw_unlock_shared(np->lck);
 		break;
 	case NODE_LCK_EXCLUSIVE:
-		lck_rw_unlock_exclusive(np->lck);
 		np->lcktype = NODE_LCK_NONE;
+		lck_rw_unlock_exclusive(np->lck);
 		break;
 	case NODE_LCK_NONE:
 		/* nothing here */
@@ -36,23 +36,26 @@ nunlock_9p(node_9p *np)
 }
 
 enum {
-	DIRTIMEOUT = 10,
+	DIRTIMEOUT = 5,
 };
 
 static int
 ngetdir_9p(node_9p *np)
 {
+	dir_9p *dp;
 	struct timeval tv;
 	int e;
 
 	microtime(&tv);
-	if (tv.tv_sec-np->dirtimer < DIRTIMEOUT)
+	if (np->dirtimer && tv.tv_sec-np->dirtimer < DIRTIMEOUT)
 		return 0;
 
-	free_9p(np->dir);
-	if ((e=stat_9p(np->nmp, np->fid, &np->dir)))
+	if ((e=stat_9p(np->nmp, np->fid, &dp)))
 		return e;
-	np->dirtimer = tv.tv_sec;
+
+	bcopy(dp, &np->dir, sizeof(*dp));
+	np->dir.name = np->dir.uid = np->dir.gid = np->dir.muid = NULL;
+	free_9p(dp);
 	return 0;
 }
 
@@ -72,11 +75,16 @@ nget_9p(mount_9p *nmp, fid_9p fid, qid_9p qid, vnode_t dvp, vnode_t *vpp, struct
 loop:
 	lck_mtx_lock(nmp->nodelck);
 	LIST_FOREACH (np, nhp, next) {
-		if(np->qid.path != qid.path)
+		if(np->dir.qid.path != qid.path)
 			continue;
 		if (ISSET(np->flags, NODE_INIT)) {
 			SET(np->flags, NODE_WAITINIT);
-			msleep(np, nmp->nodelck, PINOD|PDROP, "nget_9p", NULL);
+			msleep(np, nmp->nodelck, PINOD|PDROP, "nget_9p_init", NULL);
+			goto loop;
+		}
+		if (ISSET(np->flags, NODE_RECL)) {
+			SET(np->flags, NODE_WAITRECL);
+			msleep(np, nmp->nodelck, PINOD|PDROP, "nget_9p_reclaim", NULL);
 			goto loop;
 		}
 		vid = vnode_vid(np->vp);
@@ -85,16 +93,20 @@ loop:
 			goto loop;
 		
 		nlock_9p(np, NODE_LCK_EXCLUSIVE);
-		if (dvp && cnp && ISSET(cnp->cn_flags, MAKEENTRY) && qid.vers!=0) {
-			DEBUG("caching %s", np->dir->name);
+		if (dvp && cnp && ISSET(cnp->cn_flags, MAKEENTRY) && np->dir.qid.vers!=0) {
+			// DEBUG("caching %s", np->dir->name);
 			cache_enter(dvp, np->vp, cnp);
 		} else {
-			DEBUG("not in cache qid=%d %s", qid.vers, np->dir->name);
+			// DEBUG("not in cache qid=%d %s", qid.vers, np->dir->name);
 		}
 
 		*vpp = np->vp;
 		return 0;
 	}
+	
+	if (fid == NOFID)
+		return EFAULT;
+
 	np = malloc_9p(sizeof(*np));
 	if (np == NULL) {
 err0:
@@ -109,7 +121,7 @@ err0:
 
 	np->nmp = nmp;
 	np->fid = fid;
-	np->qid = qid;
+	np->dir.qid = qid;
 	for (i=0; i<3; i++)
 		np->openfid[i].fid = NOFID;
 
@@ -143,7 +155,7 @@ err1:
 	fsp.vnfs_markroot	= dvp==NULL? TRUE: FALSE;
 	fsp.vnfs_marksystem	= FALSE;
 	fsp.vnfs_rdev		= 0;
-	fsp.vnfs_filesize	= np->dir->length;
+	fsp.vnfs_filesize	= np->dir.length;
 	fsp.vnfs_cnp		= cnp;
 	fsp.vnfs_flags		= VNFS_ADDFSREF;
 	if (!dvp || !cnp || !ISSET(cnp->cn_flags, MAKEENTRY) || qid.vers==0)
@@ -153,8 +165,10 @@ err1:
 		goto err1;
 
 	vnode_settag(np->vp, VT_OTHER);
-	vnode_setnoreadahead(np->vp);
-	//	vnode_setnocache(vp);
+	if (qid.vers == 0) {
+		vnode_setnoreadahead(np->vp);
+		vnode_setnocache(np->vp);
+	}
 
 	lck_mtx_lock(nmp->nodelck);
 	CLR(np->flags, NODE_INIT);
@@ -181,9 +195,11 @@ ndel_9p(node_9p *np)
 	lck_mtx_unlock(nmp->nodelck);
 }
 
-#define isdot(cnp)	(((cnp)->cn_namelen==1) && ((cnp)->cn_nameptr[0]=='.'))
+#define isdot(cnp)		(((cnp)->cn_namelen==1) && ((cnp)->cn_nameptr[0]=='.'))
 #define isdotdot(cnp)	((cnp)->cn_flags & ISDOTDOT)
 #define islastcn(cnp)	((cnp)->cn_flags & ISLASTCN)
+#define ismkentry(cnp)	((cnp)->cn_flags & MAKEENTRY)
+#define isop(cnp, op)	((cnp)->cn_nameiop  == (op))
 static int
 vnop_lookup_9p(struct vnop_lookup_args *ap)
 {
@@ -198,24 +214,27 @@ vnop_lookup_9p(struct vnop_lookup_args *ap)
 	dvp = ap->a_dvp;
 	vpp = ap->a_vpp;
 	cnp = ap->a_cnp;
+	dnp = NTO9P(dvp);
+
 	if(!vnode_isdir(dvp))
 		return ENOTDIR;
 
 	if (isdotdot(cnp) && vnode_isvroot(dvp))
 		return EIO;
 
-	if (islastcn(cnp) && vnode_vfsisrdonly(dvp) &&
-		(cnp->cn_nameiop==DELETE || cnp->cn_nameiop==RENAME))
+	if (islastcn(cnp) && !isop(cnp, LOOKUP) && vnode_vfsisrdonly(dvp))
 		return EROFS;
 
 	if (isdot(cnp)) {
-		if (islastcn(cnp) && cnp->cn_nameiop==RENAME)
+		if (islastcn(cnp) && isop(cnp, RENAME))
 			return EISDIR;
+
 		if ((e=vnode_get(dvp)))
 			return e;
 		*vpp = dvp;
 		return 0;
 	}
+
 	if (isdotdot(cnp)) {
 		*vpp = vnode_getparent(dvp);
 		if (*vpp == NULL)
@@ -224,32 +243,37 @@ vnop_lookup_9p(struct vnop_lookup_args *ap)
 	}
 
 	e = cache_lookup(dvp, vpp, cnp);
-	switch(e){
-	case -1:
+	if (e == -1)	/* found */
 		return 0;
-	case ENOENT:
-		return ENOENT;
-	}
+	if (e != 0)		/* errno */
+		return e;
 
-	dnp = NTO9P(dvp);
+	/* not in cache */
 	nlock_9p(dnp, NODE_LCK_EXCLUSIVE);
-	if ((e=walk_9p(dnp->nmp, dnp->fid, cnp->cn_nameptr, cnp->cn_namelen, &fid, &qid))) {
-		if ((cnp->cn_nameiop==CREATE || cnp->cn_nameiop==RENAME) && islastcn(cnp))
-			e = EJUSTRETURN;
-		else if (cnp->cn_nameiop!=CREATE && ISSET(cnp->cn_flags, MAKEENTRY) && dnp->qid.vers!=0)
-			cache_enter(dvp, NULL, cnp);
+	e = walk_9p(dnp->nmp, dnp->fid, cnp->cn_nameptr, cnp->cn_namelen, &fid, &qid);
+	if (e) {
+		if (islastcn(cnp)) {
+			if (isop(cnp, CREATE) || isop(cnp, RENAME))
+				e = EJUSTRETURN;
+			else if (ismkentry(cnp) && dnp->dir.qid.vers!=0)
+				cache_enter(dvp, NULL, cnp);
+		}
 		goto error;
 	}
+
 	e = nget_9p(dnp->nmp, fid, qid, dvp, vpp, cnp, ap->a_context);
-	if (e || *vpp==NULL || NTO9P(*vpp)->fid!=fid)
+	if (e || *vpp==NULL || NTO9P(*vpp)->fid!=fid) 
 		clunk_9p(dnp->nmp, fid);
 
 	if (*vpp)
 		nunlock_9p(NTO9P(*vpp));
+
 error:
 	nunlock_9p(dnp);
 	return e;
 }
+#undef isop
+#undef ismkentry
 #undef islastcn
 #undef isdotdot
 #undef isdot
@@ -279,6 +303,10 @@ vnop_create_9p(struct vnop_create_args *ap)
 	fid = NOFID;
 	openfid = NOFID;
 	*vpp = NULL;
+
+	if (vnode_vfsisrdonly(dvp))
+		return EROFS;
+
 	if (vap->va_type!=VREG && vap->va_type!=VDIR)
 		return ENOTSUP;
 
@@ -289,12 +317,16 @@ vnop_create_9p(struct vnop_create_args *ap)
 	nlock_9p(dnp, NODE_LCK_EXCLUSIVE);
 	if ((e=walk_9p(nmp, dnp->fid, NULL, 0, &openfid, &qid)))
 		goto error;
+
 	mode = ORDWR;
 	perm = MAKEIMODE(vap->va_type, vap->va_mode) & 0777;
 	if (vap->va_type == VDIR) {
 		mode = OREAD;
 		SET(perm, DMDIR);
 	}
+	if (ISSET(vap->va_vaflags, VA_EXCLUSIVE))
+		SET(mode, OEXCL);
+
 	if ((e=create_9p(nmp, openfid, cnp->cn_nameptr, cnp->cn_namelen, mode, perm, &qid, &iounit)))
 		goto error;
 	if ((e=walk_9p(nmp, dnp->fid, cnp->cn_nameptr, cnp->cn_namelen, &fid, &qid)))
@@ -302,6 +334,7 @@ vnop_create_9p(struct vnop_create_args *ap)
 	if ((e=nget_9p(nmp, fid, qid, dvp, vpp, cnp, ap->a_context)))
 		goto error;
 
+	cache_purge_negatives(dvp);
 	np = NTO9P(*vpp);
 	np->iounit = iounit;
 	op = &np->openfid[mode];
@@ -331,25 +364,27 @@ vnop_open_9p(struct vnop_open_args *ap)
 	TRACE();
 	flags = OFLAGS(ap->a_mode);
 	mode = flags & O_ACCMODE;
-	flags &= ~O_ACCMODE;
-	flags &= ~(O_DIRECTORY|O_NONBLOCK);
-	flags &= ~O_APPEND;
+	CLR(flags, O_ACCMODE);
+	CLR(flags, O_DIRECTORY|O_NONBLOCK|O_EXCL|O_NOFOLLOW);
+	CLR(flags, O_APPEND);
+
 	/* locks implemented on the vfs layer */
-	flags &= ~(O_EXLOCK|O_SHLOCK);
-	if (flags & O_TRUNC) {
-		mode |= OTRUNC;
-		flags &= ~O_TRUNC;
+	CLR(flags, O_EXLOCK|O_SHLOCK);
+
+	if (ISSET(flags, O_TRUNC)) {
+		SET(mode, OTRUNC);
+		CLR(flags, O_TRUNC);
 	}
 
 	/* vnop_creat just called */
-	flags &= ~O_CREAT;
+	CLR(flags, O_CREAT);
 
-	if (flags & O_EVTONLY)
-		flags &= ~O_EVTONLY;
-	if (flags & FNOCACHE)
-		flags &= ~FNOCACHE;
-	if (flags & FNORDAHEAD)
-		flags &= ~FNORDAHEAD;
+	if (ISSET(flags, O_EVTONLY))
+		CLR(flags, O_EVTONLY);
+	if (ISSET(flags, FNOCACHE))
+		CLR(flags, FNOCACHE);
+	if (ISSET(flags, FNORDAHEAD))
+		CLR(flags, FNORDAHEAD);
 
 	if (flags) {
 		DEBUG("unexpected open mode %x", flags);
@@ -358,7 +393,6 @@ vnop_open_9p(struct vnop_open_args *ap)
 
 	np = NTO9P(ap->a_vp);
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	DEBUG("%s", np->dir->name);
 	op = &np->openfid[mode&ORDWR];
 	if (op->fid == NOFID) {
 		if ((e=walk_9p(np->nmp, np->fid, NULL, 0, &fid, &qid)))
@@ -389,13 +423,17 @@ vnop_close_9p(struct vnop_close_args *ap)
 	TRACE();
 	np = NTO9P(ap->a_vp);
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	DEBUG("%s", np->dir->name);
 	e = EINVAL;
 	op = &np->openfid[OFLAGS(ap->a_fflag)&ORDWR];
 	if (op->fid == NOFID) 
 		goto error;
 
 	if (OSDecrementAtomic(&op->ref) == 1) {
+		if (ISSET(np->flags, NODE_MMAPPED))
+			ubc_msync(np->vp, 0, ubc_getsize(np->vp), NULL, UBC_PUSHDIRTY|UBC_SYNC);
+		else
+			cluster_push(np->vp, IO_CLOSE);
+
 		/* root gets clunk in vfs_unmount_9p() */
 		if (!ISSET(np->nmp->flags, F_UNMOUNTING))
 			e = clunk_9p(np->nmp, op->fid);
@@ -412,7 +450,6 @@ vnop_getattr_9p(struct vnop_getattr_args *ap)
 	struct vnode_attr *vap;
 	struct timespec ts;
 	node_9p *np;
-	dir_9p *dp;
 	int e;
 
 	TRACE();
@@ -420,32 +457,30 @@ vnop_getattr_9p(struct vnop_getattr_args *ap)
 	np = NTO9P(ap->a_vp);
 	/* exclusive, because we modify np->dir */
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	DEBUG("%s", np->dir->name);
 	if ((e=ngetdir_9p(np)))
 		goto error;
 
-	dp = np->dir;
 	ts.tv_nsec	= 0;
 	vap = ap->a_vap;
-	VATTR_RETURN(vap, va_rdev, dp->dev);
+	VATTR_RETURN(vap, va_rdev, np->dir.dev);
 	VATTR_RETURN(vap, va_nlink, 1);
-	VATTR_RETURN(vap, va_data_size, dp->length);
+	VATTR_RETURN(vap, va_data_size, np->dir.length);
 	VATTR_RETURN(vap, va_iosize, np->iounit);
 	VATTR_RETURN(vap, va_uid, np->nmp->uid);
 	VATTR_RETURN(vap, va_gid, np->nmp->gid);
-	VATTR_RETURN(vap, va_mode, dp->mode & 0777);
+	VATTR_RETURN(vap, va_mode, np->dir.mode & 0777);
 	VATTR_RETURN(vap, va_flags, 0);
-	ts.tv_sec = dp->atime;
+	ts.tv_sec = np->dir.atime;
 	VATTR_RETURN(vap, va_access_time, ts);
-	ts.tv_sec = dp->mtime;
+	ts.tv_sec = np->dir.mtime;
 	VATTR_RETURN(vap, va_modify_time, ts);
-	VATTR_RETURN(vap, va_fileid, dp->qid.path);
-	VATTR_RETURN(vap, va_linkid, QTOI(dp->qid));
+	VATTR_RETURN(vap, va_fileid, QTOI(np->dir.qid));
+	VATTR_RETURN(vap, va_linkid, QTOI(np->dir.qid));
 	VATTR_RETURN(vap, va_fsid, vfs_statfs(np->nmp->mp)->f_fsid.val[0]);
-	VATTR_RETURN(vap, va_filerev, dp->qid.vers);
+	VATTR_RETURN(vap, va_filerev, np->dir.qid.vers);
 	VATTR_RETURN(vap, va_gen, 0);
 	VATTR_RETURN(vap, va_encoding, 0x7E); /* utf-8 */
-	VATTR_RETURN(vap, va_type, (dp->mode&DMDIR)? VDIR: VREG);
+	VATTR_RETURN(vap, va_type, (np->dir.qid.type&QTDIR)? VDIR: VREG);
 	/*
 	if (VATTR_IS_ACTIVE(vap, va_name) && !vnode_isvroot(ap->a_vp)) {
 		strlcpy(vap->va_name, dp->name, MAXPATHLEN);
@@ -477,23 +512,17 @@ vnop_setattr_9p(struct vnop_setattr_args *ap)
 	vp = ap->a_vp;
 	vap = ap->a_vap;
 	np = NTO9P(vp);
-	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	DEBUG("%s", np->dir->name);
-	if (vnode_vfsisrdonly(vp)) {
-		e = EROFS;
-		goto error;
-	}
-	if (vnode_isvroot(vp)) {
-		e = EACCES;
-		goto error;
-	}
+
+	if (vnode_vfsisrdonly(vp))
+		return EROFS;
 	
+	if (vnode_isvroot(vp))
+		return EACCES;
+
 	nulldir(&d);
 	if (VATTR_IS_ACTIVE(vap, va_data_size)) {
-		if (vnode_isdir(vp)) {
-			e = EISDIR;
-			goto error;
-		}
+		if (vnode_isdir(vp))
+			return EISDIR;
 		d.length = vap->va_data_size;
 	}
 	VATTR_SET_SUPPORTED(vap, va_data_size);
@@ -506,114 +535,171 @@ vnop_setattr_9p(struct vnop_setattr_args *ap)
 		d.mtime = vap->va_modify_time.tv_sec;
 	VATTR_SET_SUPPORTED(vap, va_modify_time);
 
-	if (VATTR_IS_ACTIVE(vap, va_mode))
+	if (VATTR_IS_ACTIVE(vap, va_mode)) {
 		d.mode = vap->va_mode & 0777;
+		if (vnode_isdir(vp))
+			SET(d.mode, DMDIR);
+	}
 	VATTR_SET_SUPPORTED(vap, va_mode);
 
+	nlock_9p(np, NODE_LCK_EXCLUSIVE);
 	e = wstat_9p(np->nmp, np->fid, &d);
-error:
+	np->dirtimer = 0;
 	nunlock_9p(np);
 	return e;
 }
 
 static int
-vnop_read_9p(struct vnop_read_args *ap)
+nread_9p(node_9p *np, uio_t uio)
 {
 	openfid_9p *op;
-	vnode_t vp;
-	node_9p *np;
-	int64_t resid;
-	uio_t uio;
+	uint32_t n, l;
 	char *p;
-	int e, n, l;
+	int e;
+
+	TRACE();
+	op = &np->openfid[OREAD];
+	if (op->fid == NOFID)
+		op = &np->openfid[ORDWR];
+	if (op->fid == NOFID)
+		return EBADF;
+	
+	p = malloc_9p(np->iounit);
+	if (p == NULL)
+		return ENOMEM;
+
+	e = 0;
+	while (uio_resid(uio) > 0) {
+		n = MIN(uio_resid(uio), np->iounit);
+		if ((e=read_9p(np->nmp, op->fid, p, n, uio_offset(uio), &l)) || l==0)
+			break;
+		if ((e=uiomove(p, l, uio)))
+			break;
+	}
+	free_9p(p);
+	return e;
+}
+
+
+static int
+vnop_read_9p(struct vnop_read_args *ap)
+{
+	node_9p *np;
+	vnode_t vp;
+	uio_t uio;
+	int e;
 
 	TRACE();
 	vp = ap->a_vp;
 	uio = ap->a_uio;
 	np = NTO9P(vp);
-	p = NULL;
 
 	if (vnode_isdir(vp))
 		return EISDIR;
 
+	if (uio_offset(uio) < 0)
+		return EINVAL;
+
+	if (uio_resid(uio) == 0)
+		return 0;
+
 	nlock_9p(np, NODE_LCK_SHARED);
-	DEBUG("%s", np->dir->name);
-	e = EBADF;
-	op = &np->openfid[OREAD];
+	if (vnode_isnocache(vp) || ISSET(ap->a_ioflag, IO_NOCACHE))
+		e = nread_9p(np, uio);
+	else
+		e = cluster_read(vp, uio, np->dir.length, ap->a_ioflag);
+	nunlock_9p(np);
+	return e;
+}
+
+static int
+nwrite_9p(node_9p *np, uio_t uio)
+{
+	openfid_9p *op;
+	user_ssize_t resid;
+	uint32_t l;
+	off_t off;
+	char *p;
+	int n, e;
+
+	TRACE();
+	op = &np->openfid[OWRITE];
 	if (op->fid == NOFID)
 		op = &np->openfid[ORDWR];
 	if (op->fid == NOFID)
-		goto error;
+		return EBADF;
 
-	resid = uio_resid(uio);
-	n = MIN(resid, np->iounit);
-
-	e = ENOMEM;
-	p = malloc_9p(n);
+	p = malloc_9p(np->iounit);
 	if (p == NULL)
-		goto error;
+		return ENOMEM;
 
-	if ((e=read_9p(np->nmp, op->fid, p, n, uio_offset(uio), &l)))
-		goto error;
-	e = uiomove(p, l, uio);
-error:
+	e = 0;
+	while (uio_resid(uio) > 0) {
+		l = 0;
+		off = uio_offset(uio);
+		resid = uio_resid(uio);
+		n = MIN(resid, np->iounit);
+		if ((e=uiomove(p, n, uio)))
+			break;
+		if ((e=write_9p(np->nmp, op->fid, p, n, off, &l)))
+			break;
+		uio_setoffset(uio, off+l);
+		uio_setresid(uio, resid-l);
+	}
 	free_9p(p);
-	nunlock_9p(np);
 	return e;
 }
 
 static int
 vnop_write_9p(struct vnop_write_args *ap)
 {
-	openfid_9p *op;
 	vnode_t vp;
 	node_9p *np;
-	mount_9p *nmp;
 	uio_t uio;
-	off_t off;
-	int64_t resid;
-	char *p;
-	int n, e, l;
-	
+	user_ssize_t resid;
+	off_t eof, zh, zt, off;
+	int e, flag;
+
 	TRACE();
 	vp = ap->a_vp;
 	uio = ap->a_uio;
 	np = NTO9P(vp);
-	nmp = np->nmp;
-	p = NULL;
 
 	if (vnode_isdir(vp))
 		return EISDIR;
-
-	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	DEBUG("%s", np->dir->name);
-	e = EBADF;
-	op = &np->openfid[OWRITE];
-	if (op->fid == NOFID)
-		op = &np->openfid[ORDWR];
-	if (op->fid == NOFID)
-		goto error;
-
+	
 	off = uio_offset(uio);
+	if (off < 0)
+		return EINVAL;
+	
 	resid = uio_resid(uio);
-	n = MIN(resid, np->iounit);
+	if (resid == 0)
+		return 0;
 
-	e = ENOMEM;
-	p = malloc_9p(n);
-	if (p == NULL)
-		goto error;
-
-	if ((e=uiomove(p, n, uio)))
-		goto error;
-	l = 0;
-	if ((e=write_9p(nmp, op->fid, p, n, off, &l)))
-		goto error;
-
-	uio_setoffset(uio, off+l);
-	uio_setresid(uio, resid+l);
-
-error:
-	free_9p(p);
+	flag = ap->a_ioflag;
+	nlock_9p(np, NODE_LCK_EXCLUSIVE);
+	if (vnode_isnocache(vp) || ISSET(flag, IO_NOCACHE))
+		e = nwrite_9p(np, uio);
+	else {
+		zh = zt = 0;
+		eof = MAX(np->dir.length, resid+off);
+		if (eof > np->dir.length) {
+			if (off > np->dir.length) {
+				zh = np->dir.length;
+				SET(flag, IO_HEADZEROFILL);
+			}
+  			zt = (eof + (PAGE_SIZE_64 - 1)) & ~PAGE_MASK_64;
+			if (zt > eof) {
+				zt = eof;
+				SET(flag, IO_TAILZEROFILL);
+			}
+		}
+		e = cluster_write(vp, uio, np->dir.length, eof, zh, zt, flag);
+		if (e==0 && eof>np->dir.length) {
+			np->dirtimer = 0;
+			np->dir.length = eof;
+		}
+	}
 	nunlock_9p(np);
 	return e;
 }
@@ -634,6 +720,32 @@ vnop_revoke_9p(struct vnop_revoke_args *ap)
 }
 
 static int
+vnop_mmap_9p(struct vnop_mmap_args *ap)
+{
+	node_9p *np;
+
+	TRACE();
+	np = NTO9P(ap->a_vp);
+	nlock_9p(np, NODE_LCK_EXCLUSIVE);
+	SET(np->flags, NODE_MMAPPED);
+	nunlock_9p(np);
+	return 0;
+}
+
+static int
+vnop_mnomap_9p(struct vnop_mnomap_args *ap)
+{
+	node_9p *np;
+	
+	TRACE();
+	np = NTO9P(ap->a_vp);
+	nlock_9p(np, NODE_LCK_EXCLUSIVE);
+	CLR(np->flags, NODE_MMAPPED);
+	nunlock_9p(np);
+	return 0;
+}
+
+static int
 vnop_fsync_9p(struct vnop_fsync_args *ap)
 {
 	node_9p *np;
@@ -641,10 +753,23 @@ vnop_fsync_9p(struct vnop_fsync_args *ap)
 	int e;
 
 	TRACE();
+	if (!vnode_isreg(ap->a_vp))
+		return 0;
+
 	np = NTO9P(ap->a_vp);
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	nulldir(&d);
-	e = wstat_9p(np->nmp, np->fid, &d);
+	if (ubc_getsize(ap->a_vp)>0 && !vnode_isnocache(ap->a_vp)) {
+		if (ISSET(np->flags, NODE_MMAPPED))
+			ubc_msync(np->vp, 0, ubc_getsize(np->vp), NULL, UBC_PUSHDIRTY|UBC_SYNC);
+		else
+			cluster_push(np->vp, IO_SYNC);
+	}
+	e = 0;
+	/* only sync write fids */
+	if (np->openfid[OWRITE].fid!=NOFID || np->openfid[ORDWR].fid!=NOFID) {
+		nulldir(&d);
+		e = wstat_9p(np->nmp, np->fid, &d);
+	}
 	nunlock_9p(np);
 	return e;
 }
@@ -659,24 +784,24 @@ vnop_remove_9p(struct vnop_remove_args *ap)
 	TRACE();
 	dvp = ap->a_dvp;
 	vp = ap->a_vp;
-
-	if (dvp == vp)
-		return EINVAL;
-
 	dnp = NTO9P(dvp);
 	np = NTO9P(vp);
-	nlock_9p(dnp, NODE_LCK_EXCLUSIVE);
-	nlock_9p(np, NODE_LCK_EXCLUSIVE);
 
-	if (ISSET(ap->a_flags, VNODE_REMOVE_NODELETEBUSY) && vnode_isinuse(vp, 0)) {
-		e = EBUSY;
-		goto error;
+	if (dvp == vp) {
+		panic("parent == node");
+		return EINVAL;
 	}
 
-	cache_purge(vp);
+	if (ISSET(ap->a_flags, VNODE_REMOVE_NODELETEBUSY) &&
+		vnode_isinuse(vp, 0))
+		return EBUSY;
+
+	nlock_9p(dnp, NODE_LCK_EXCLUSIVE);
+	nlock_9p(np, NODE_LCK_EXCLUSIVE);
 	if ((e=remove_9p(np->nmp, np->fid)))
 		goto error;
 
+	cache_purge(vp);
 	vnode_recycle(vp);
 
 error:
@@ -702,14 +827,12 @@ vnop_rename_9p(struct vnop_rename_args *ap)
 	tcnp = ap->a_tcnp;
 	fdnp = NTO9P(fdvp);
 	fnp = NTO9P(fvp);
-	if (vnode_vfsisrdonly(tdvp))
-		return EROFS;
-	if (fdvp != tdvp || NTO9P(fdvp) != NTO9P(tdvp))
+
+	if (fdvp!=tdvp || NTO9P(fdvp)!=NTO9P(tdvp))
 		return ENOTSUP;
 
 	nlock_9p(fdnp, NODE_LCK_EXCLUSIVE);
 	nlock_9p(fnp, NODE_LCK_EXCLUSIVE);
-	cache_purge(fvp);
 	nulldir(&d);
 	e = ENOMEM;
 	s = malloc_9p(tcnp->cn_namelen+1);
@@ -721,6 +844,10 @@ vnop_rename_9p(struct vnop_rename_args *ap)
 	d.name = s;
 	e = wstat_9p(fnp->nmp, fnp->fid, &d);
 	free_9p(s);
+	if (e == 0) {
+		cache_purge(fvp);
+		cache_purge(fdvp);
+	}
 
 error:
 	nunlock_9p(fnp);
@@ -757,83 +884,106 @@ vnop_rmdir_9p(struct vnop_rmdir_args *ap)
 	return vnop_remove_9p(&a);
 }
 
-#define DIRENT_LEN(namlen) (offsetof(struct dirent, d_name) + namlen + 1 + 3) & ~3;
+#define DIRENT32_LEN(namlen) \
+	((offsetof(struct dirent, d_name) + (namlen) + 1 + 3) & ~3)
+
+#define DIRENT64_LEN(namlen) \
+	((offsetof(struct direntry, d_name) + (namlen) + 1 + 7) & ~7)
 
 static int
 vnop_readdir_9p(struct vnop_readdir_args *ap)
 {
-	struct dirent dent;
-	openfid_9p *op;
+	struct direntry de64;
+	struct dirent de32;
 	vnode_t vp;
 	node_9p *np;
 	dir_9p *dp;
+	fid_9p fid;
 	off_t off;
 	uio_t uio;
-	int e, nd, l, ndent, i, nlen;
-
+	uint32_t i, nd, nlen, plen;
+	void *p;
+	int e;
+	
 	TRACE();
 	vp = ap->a_vp;
 	uio = ap->a_uio;
 	np = NTO9P(vp);
+
+	if (!vnode_isdir(vp))
+		return ENOTDIR;
+
+	if (ISSET(ap->a_flags, VNODE_READDIR_REQSEEKOFF))
+		return EINVAL;
+
+	off = uio_offset(uio);
+	if (off < 0)
+		return EINVAL;
+	
+	if (uio_resid(uio) == 0)
+		return 0;
+
+	e = 0;
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	if (!vnode_isdir(vp)) {
-		e = ENOTDIR;
+	fid = np->openfid[OREAD].fid;
+	if (fid == NOFID) {
+		e = EBADF;
 		goto error;
 	}
-	e = EINVAL;
-	if (ISSET(ap->a_flags, VNODE_READDIR_REQSEEKOFF)
-		|| ISSET(ap->a_flags, VNODE_READDIR_EXTENDED))
-		goto error;
-
-	e = EBADF;
-	op = &np->openfid[OREAD];
-	if (op->fid == NOFID)
-		goto error;
 
 	if (ap->a_eofflag)
 		ap->a_eofflag = 0;
 
-	off = uio_offset(uio);
-	dp = NULL;
-	ndent = 0;
-	for (;;) {
-		if (uio_resid(uio) < (int)sizeof(struct dirent))
-			break;
+	if (off == 0 || np->direntries==NULL) {
+		if((e=readdirs_9p(np->nmp, fid, &np->direntries, &np->ndirentries)))
+			goto error;
+		if (np->ndirentries && np->direntries==NULL)
+			panic("bug in readdir");
+	}
 	
-		free_9p(dp);
-		dp = NULL;
-		nd = l = 0;
-		e = readdir_9p(np->nmp, op->fid, off, &dp, &nd, &l);
-		if (e || !dp || nd<=0 || l<=0)
+	dp = np->direntries;
+	nd = np->ndirentries;
+	for (i=off; i<nd; i++) {
+		if (ISSET(ap->a_flags, VNODE_READDIR_EXTENDED)) {
+			DEBUG("extended");
+			bzero(&de64, sizeof(de64));
+			de64.d_ino = QTOI(dp[i].qid);
+			de64.d_type = dp[i].mode&DMDIR? DT_DIR: DT_REG;
+			nlen = strlen(dp[i].name);
+			de64.d_namlen = MIN(nlen, sizeof(de64.d_name)-1);
+			bcopy(dp[i].name, de64.d_name, de64.d_namlen);
+			de64.d_reclen = DIRENT64_LEN(de64.d_namlen);
+			plen = de64.d_reclen;
+			p = &de64;
+		} else {
+			bzero(&de32, sizeof(de32));
+			de32.d_ino = QTOI(dp[i].qid);
+			de32.d_type = dp[i].mode&DMDIR? DT_DIR: DT_REG;
+			nlen = strlen(dp[i].name);
+			de32.d_namlen = MIN(nlen, sizeof(de32.d_name)-1);
+			bcopy(dp[i].name, de32.d_name, de32.d_namlen);
+			de32.d_reclen = DIRENT32_LEN(de32.d_namlen);
+			plen = de32.d_reclen;
+			p = &de32;
+		}
+
+		if (uio_resid(uio) < plen)
 			break;
 
-		for (i=0; i<nd; i++) {
-			bzero(&dent, sizeof(dent));
-			dent.d_ino = QTOI(dp[i].qid);
-			nlen = strlen(dp[i].name);
-			if (nlen > (int)(sizeof(dent.d_name)-1))
-				dent.d_namlen = sizeof(dent.d_name) - 1;
-			else
-				dent.d_namlen = nlen;
-			dent.d_reclen = DIRENT_LEN(dent.d_namlen);
-			dent.d_type = dp[i].mode&DMDIR? DT_DIR: DT_REG;
-			bcopy(dp[i].name, dent.d_name, dent.d_namlen);
-			dent.d_name[sizeof(dent.d_name)-1] = 0;
-			if (uio_resid(uio) < dent.d_reclen)
-				panic("dirent doesn't fit");
-			uiomove((char*)&dent, dent.d_reclen, uio);
-			ndent++;
-		}
-		off += l;
+		if ((e=uiomove(p, plen, uio)))
+			goto error;
 	}
 
-	if (!e) {
-		uio_setoffset(uio, off);
-		if (ap->a_numdirent)
-			*ap->a_numdirent = ndent;
-		if ((!nd || !l) && ap->a_eofflag)
-			*ap->a_eofflag = 1;
+	uio_setoffset(uio, i);
+	if (ap->a_numdirent)
+		*ap->a_numdirent = i - off;
+	if (i==nd && ap->a_eofflag) {
+		*ap->a_eofflag = 1;
+		free_9p(np->direntries);
+		np->direntries = NULL;
+		np->ndirentries = 0;
 	}
+
 error:
 	nunlock_9p(np);
 	return e;
@@ -848,19 +998,32 @@ vnop_reclaim_9p(struct vnop_reclaim_args *ap)
 	TRACE();
 	vp = ap->a_vp;
 	np = NTO9P(vp);
-	/* balance the ref added in nget_9p() */
-	vnode_removefsref(vp);
-	
-	ndel_9p(np);
-	vnode_clearfsnode(vp);
-	cache_purge(vp);
+
+	nlock_9p(np, NODE_LCK_EXCLUSIVE);
+	{
+		SET(np->flags, NODE_RECL);
+		ndel_9p(np);
+
+		/* balance the ref added in nget_9p() */
+		vnode_removefsref(vp);
+		vnode_clearfsnode(vp);
+
+		cache_purge(vp);
+	}
+	nunlock_9p(np);
 
 	/* root gets clunk in vfs_unmount_9p() */
 	if (!ISSET(np->nmp->flags, F_UNMOUNTING))
 		clunk_9p(np->nmp, np->fid);
 
 	/* free it */
+	CLR(np->flags, NODE_RECL);
+	if (ISSET(np->flags, NODE_WAITRECL)) {
+		CLR(np->flags, NODE_WAITRECL);
+		wakeup(np);
+	}
 	lck_rw_free(np->lck, lck_grp_9p);
+	free_9p(np->direntries);
 	free_9p(np);
 	return 0;
 }
@@ -868,7 +1031,10 @@ vnop_reclaim_9p(struct vnop_reclaim_args *ap)
 static int
 vnop_pathconf_9p(struct vnop_pathconf_args *ap)
 {
+	node_9p *np;
+
 	TRACE();
+	np = NTO9P(ap->a_vp);
 	switch (ap->a_name) {
 	case _PC_LINK_MAX:
 		*ap->a_retval = 1;
@@ -878,8 +1044,14 @@ vnop_pathconf_9p(struct vnop_pathconf_args *ap)
 		*ap->a_retval = NAME_MAX;
 		return 0;
 
+	case _PC_PATH_MAX:
+		*ap->a_retval = PATH_MAX;
+		return 0;
+
 	case _PC_PIPE_BUF:
-		*ap->a_retval = NTO9P(ap->a_vp)->iounit;
+		nlock_9p(np, NODE_LCK_SHARED);
+		*ap->a_retval = np->iounit;
+		nunlock_9p(np);
 		return 0;
 
 	case _PC_CHOWN_RESTRICTED:
@@ -887,6 +1059,10 @@ vnop_pathconf_9p(struct vnop_pathconf_args *ap)
 		*ap->a_retval = 0;
 		return 0;
 
+	case _PC_NAME_CHARS_MAX:
+		*ap->a_retval = NAME_MAX;
+		return 0;
+	
 	case _PC_CASE_SENSITIVE:
 	case _PC_CASE_PRESERVING:
 		*ap->a_retval = 1;
@@ -896,6 +1072,31 @@ vnop_pathconf_9p(struct vnop_pathconf_args *ap)
 		*ap->a_retval = -1;
 		return EINVAL;
 	}
+}
+
+/* already locked */
+static int
+vnop_pagein_9p(struct vnop_pagein_args *ap)
+{
+	node_9p *np;
+
+	TRACE();
+	np = NTO9P(ap->a_vp);
+	return cluster_pagein(ap->a_vp, ap->a_pl, ap->a_pl_offset, ap->a_f_offset, ap->a_size, np->dir.length, ap->a_flags);
+}
+
+/* already locked */
+static int
+vnop_pageout_9p(struct vnop_pageout_args *ap)
+{
+	node_9p *np;
+
+	TRACE();
+	if (vnode_vfsisrdonly(ap->a_vp))
+		return EROFS;
+
+	np = NTO9P(ap->a_vp);
+	return cluster_pageout(ap->a_vp, ap->a_pl, ap->a_pl_offset, ap->a_f_offset, ap->a_size, np->dir.length, ap->a_flags);
 }
 
 static int
@@ -925,8 +1126,82 @@ vnop_offtoblk_9p(struct vnop_offtoblk_args *ap)
 }
 
 static int
+vnop_blockmap_9p(struct vnop_blockmap_args *ap)
+{
+	mount_t mp;
+	
+	TRACE();
+	mp = vnode_mount(ap->a_vp);
+	if (mp == NULL)
+		return ENXIO;
+
+	if (ap->a_run)
+		*ap->a_run = ap->a_size;
+	if (ap->a_bpn)
+		*ap->a_bpn = ap->a_foffset / vfs_statfs(mp)->f_bsize;
+	if (ap->a_poff)
+		*(int32_t*)ap->a_poff = 0;
+	return 0;
+}
+
+static int
+vnop_strategy_9p(struct vnop_strategy_args *ap)
+{
+	mount_t mp;
+	struct buf *bp;
+	node_9p *np;
+	caddr_t addr;
+	uio_t uio;
+	int e, flags;
+
+	TRACE();
+	bp = ap->a_bp;
+	np = NTO9P(buf_vnode(bp));
+	flags = buf_flags(bp);
+	uio = NULL;
+	addr = NULL;
+
+	mp = vnode_mount(buf_vnode(bp));
+	if (mp == NULL)
+		return ENXIO;
+
+	if ((e=buf_map(bp, &addr)))
+		goto error;
+
+	uio = uio_create(1, buf_blkno(bp) * vfs_statfs(mp)->f_bsize, UIO_SYSSPACE,
+					 ISSET(flags, B_READ)? UIO_READ: UIO_WRITE);
+	if (uio == NULL) {
+		e = ENOMEM;
+		goto error;
+	}
+	
+	uio_addiov(uio, CAST_USER_ADDR_T(addr), buf_count(bp));
+	if (ISSET(flags, B_READ)) {
+		if((e=nread_9p(np, uio)))
+			goto error;
+		if (uio_resid(uio) > 0) {
+			bzero(addr+buf_count(bp)-uio_resid(uio), uio_resid(uio));
+			uio_update(uio, uio_resid(uio));
+		}
+	} else {
+		if ((e=nwrite_9p(np, uio)))
+			goto error;
+	}
+	buf_setresid(bp, uio_resid(uio));
+error:
+	if (uio)
+		uio_free(uio);
+	if (addr)
+		buf_unmap(bp);
+	buf_seterror(bp, e);
+	buf_biodone(bp);
+	return e;
+}
+
+static int
 vnop_bwrite_9p(struct vnop_bwrite_args *ap)
 {
+	TRACE();
 	return buf_bwrite(ap->a_bp);
 }
 
@@ -947,8 +1222,8 @@ static struct vnodeopv_entry_desc vnode_entry_desc_9p[] ={
 	{ &vnop_select_desc,		(vnop_t*)vnop_select_9p		},
 //	{ &vnop_exchange_desc,		(vnop_t*)	},
 	{ &vnop_revoke_desc,		(vnop_t*)vnop_revoke_9p		},
-//	{ &vnop_mmap_desc,			(vnop_t*)	},
-//	{ &vnop_mnomap_desc,		(vnop_t*)	},
+	{ &vnop_mmap_desc,			(vnop_t*)vnop_mmap_9p		},
+	{ &vnop_mnomap_desc,		(vnop_t*)vnop_mnomap_9p		},
 	{ &vnop_fsync_desc,			(vnop_t*)vnop_fsync_9p		},
 	{ &vnop_remove_desc,		(vnop_t*)vnop_remove_9p		},
 //	{ &vnop_link_desc,			(vnop_t*)	},	/* no links */
@@ -965,14 +1240,18 @@ static struct vnodeopv_entry_desc vnode_entry_desc_9p[] ={
 //	{ &vnop_advlock_desc,		(vnop_t*)	},	/* vfs locks */
 //	{ &vnop_truncate_desc,		(vnop_t*)	},	/* obsolete */
 //	{ &vnop_allocate_desc,		(vnop_t*)	},	/* AFS/HFS */
-//	{ &vnop_pagein_desc,		(vnop_t*)	},
-//	{ &vnop_pageout_desc,		(vnop_t*)	},
+	{ &vnop_pagein_desc,		(vnop_t*)vnop_pagein_9p		},
+	{ &vnop_pageout_desc,		(vnop_t*)vnop_pageout_9p	},
 //	{ &vnop_searchfs_desc,		(vnop_t*)	},	/* no searchfs */
 //	{ &vnop_copyfile_desc,		(vnop_t*)	},	/* no copyfile */
+//	{ &vnop_getxattr_desc,		(vnop_t*)	},	/* vfs xattrs */
+//	{ &vnop_setxattr_desc,		(vnop_t*)	},	/* vfs xattrs */
+//	{ &vnop_removexattr_desc,	(vnop_t*)	},	/* vfs xattrs */
+//	{ &vnop_listxattr_desc,		(vnop_t*)	},	/* vfs xattrs */
 	{ &vnop_blktooff_desc,		(vnop_t*)vnop_blktooff_9p	},
 	{ &vnop_offtoblk_desc,		(vnop_t*)vnop_offtoblk_9p	},
-//	{ &vnop_blockmap_desc,		(vnop_t*)	},
-//	{ &vnop_strategy_desc,		(vnop_t*)	},
+	{ &vnop_blockmap_desc,		(vnop_t*)vnop_blockmap_9p	},
+	{ &vnop_strategy_desc,		(vnop_t*)vnop_strategy_9p	},
 	{ &vnop_bwrite_desc,		(vnop_t*)vnop_bwrite_9p		},
 	{ NULL, NULL}
 };

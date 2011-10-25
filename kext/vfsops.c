@@ -5,7 +5,7 @@
 lck_grp_t *lck_grp_9p;
 
 __private_extern__ void*
-malloc_9p(uint32_t n)
+malloc_9p(size_t n)
 {
 	void *p;
 
@@ -150,24 +150,21 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 	
 	vfs_getnewfsid(mp);
 	vfs_setfsprivate(mp, nmp);
-
+	
+	nmp->flags = args.flags;
 	if ((e=addrget_9p(args.addr, args.addrlen, &addr)))
 		goto error;
 	if ((e=connect_9p(nmp, addr)))
 		goto error;
-	if ((e=version_9p(nmp, VERSION9P, 8192, &nmp->version, &nmp->msize)))
+	if ((e=version_9p(nmp, VERSION9P, &nmp->version)))
 		goto error;
 
-	nmp->flags = args.flags;
 	nmp->afid = NOFID;
 	if (args.authaddr && args.authaddrlen && args.authkey) {
-		DEBUG("copyin authkey");
 		if ((e=copyin(args.authkey, authkey, DESKEYLEN)))
 			goto error;
-		DEBUG("copyin authaddr");
 		if ((e=addrget_9p(args.authaddr, args.authaddrlen, &authaddr)))
 			goto error;
-		DEBUG("uname=%s aname=%s", nmp->uname, nmp->aname);
 		if ((e=auth_9p(nmp, nmp->uname, nmp->aname, &nmp->afid, &qid)))
 			goto error;
 		if (nmp->afid!=NOFID &&
@@ -177,8 +174,6 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 	}
 	if ((e=attach_9p(nmp, nmp->uname, nmp->aname, nmp->afid, &fid, &qid)))
 		goto error;
-
-	setbufsize_9p(nmp);
 
 	if ((e=nget_9p(nmp, fid, qid, NULL, &nmp->root, NULL, ctx)))
 		goto error;
@@ -231,19 +226,19 @@ vfs_unmount_9p(mount_t mp, int mntflags, __unused vfs_context_t ctx)
 	TRACE();
 	nmp = MTO9P(mp);
 	flags = 0;
-	if(mntflags & MNT_FORCE)
-		flags |= FORCECLOSE;
+	if(ISSET(mntflags,MNT_FORCE))
+		SET(flags, FORCECLOSE);
 
+	OSBitOrAtomic(F_UNMOUNTING, &nmp->flags);
 	vp = nmp->root;
 	if ((e=vflush(mp, vp, flags)))
-		return e;
+		goto error;
 
-	if (vnode_isinuse(vp, 1) && (flags&FORCECLOSE)==0)
-		return EBUSY;
+	if (vnode_isinuse(vp, 1) && !ISSET(flags, FORCECLOSE)) {
+		e = EBUSY;
+		goto error;
+	}
 
-	lck_mtx_lock(nmp->lck);
-	nmp->flags |= F_UNMOUNTING;
-	lck_mtx_unlock(nmp->lck);
 	clunk_9p(nmp, NTO9P(vp)->fid);
 	vnode_rele(vp);
 	vflush(mp, NULL, FORCECLOSE);
@@ -252,6 +247,10 @@ vfs_unmount_9p(mount_t mp, int mntflags, __unused vfs_context_t ctx)
 	cancelrpcs_9p(nmp);
 	freemount_9p(nmp);
     return 0;
+
+error:
+	OSBitAndAtomic(~F_UNMOUNTING, &nmp->flags);
+	return e;
 }
 
 static int
@@ -303,8 +302,8 @@ vfs_getattr_9p(mount_t mp, struct vfs_attr *ap, vfs_context_t ctx)
 			| VOL_CAP_FMT_CASE_PRESERVING
 			| VOL_CAP_FMT_FAST_STATFS
 			| VOL_CAP_FMT_2TB_FILESIZE
-//			| VOL_CAP_FMT_OPENDENYMODES
-//			| VOL_CAP_FMT_HIDDEN_FILES
+			| VOL_CAP_FMT_OPENDENYMODES
+			| VOL_CAP_FMT_HIDDEN_FILES
 			| VOL_CAP_FMT_PATH_FROM_ID
 			| VOL_CAP_FMT_NO_VOLUME_SIZES
 			| VOL_CAP_FMT_DECMPFS_COMPRESSION
@@ -319,25 +318,25 @@ vfs_getattr_9p(mount_t mp, struct vfs_attr *ap, vfs_context_t ctx)
 			;
 
 		ap->f_capabilities.valid[VOL_CAPABILITIES_INTERFACES] = 0
-//			| VOL_CAP_INT_SEARCHFS
+			| VOL_CAP_INT_SEARCHFS
 			| VOL_CAP_INT_ATTRLIST
 			| VOL_CAP_INT_NFSEXPORT
 			| VOL_CAP_INT_READDIRATTR
-//			| VOL_CAP_INT_EXCHANGEDATA
-//			| VOL_CAP_INT_COPYFILE
+			| VOL_CAP_INT_EXCHANGEDATA
+			| VOL_CAP_INT_COPYFILE
 			| VOL_CAP_INT_ALLOCATE
 			| VOL_CAP_INT_VOL_RENAME
 			| VOL_CAP_INT_ADVLOCK
 			| VOL_CAP_INT_FLOCK
-//			| VOL_CAP_INT_EXTENDED_SECURITY
+			| VOL_CAP_INT_EXTENDED_SECURITY
 			| VOL_CAP_INT_USERACCESS
-//			| VOL_CAP_INT_MANLOCK
+			| VOL_CAP_INT_MANLOCK
 			| VOL_CAP_INT_NAMEDSTREAMS
 			| VOL_CAP_INT_EXTENDED_ATTR
 			;
 		ap->f_capabilities.capabilities[VOL_CAPABILITIES_INTERFACES] = 0
-//			| VOL_CAP_INT_ATTRLIST
-//			| VOL_CAP_INT_READDIRATTR
+			| VOL_CAP_INT_ADVLOCK
+			| VOL_CAP_INT_FLOCK
 			;
 
 		ap->f_capabilities.valid[VOL_CAPABILITIES_RESERVED1] = 0;
@@ -375,11 +374,52 @@ vfs_getattr_9p(mount_t mp, struct vfs_attr *ap, vfs_context_t ctx)
 	return 0;
 }
 
+static int
+vfs_sync_9p(struct mount *mp, int waitfor, vfs_context_t ctx)
+{
+#pragma unused(mp)
+#pragma unused(waitfor)
+#pragma unused(ctx)
+	TRACE();
+	return 0;
+}
+
+static int
+vfs_vget_9p(struct mount *mp, ino64_t ino, vnode_t *vpp, vfs_context_t ctx)
+{
+	vnode_t vp;
+	qid_9p qid;
+	int e;
+
+	TRACE();
+	qid.path = ITOP(ino);
+	qid.type = ITOT(ino);
+	*vpp = NULL;
+	if ((e=nget_9p(MTO9P(mp), NOFID, qid, NULL, &vp, NULL, ctx)))
+		return e;
+	nunlock_9p(NTO9P(vp));
+	if ((e=vnode_get(vp)))
+		return e;
+
+	*vpp = vp;
+	return 0;
+}
+
+
 static struct vfsops vfsops_9p = {
 	.vfs_mount		= vfs_mount_9p,
+//	.vfs_start		= vfs_start_9p,
 	.vfs_unmount	= vfs_unmount_9p,
 	.vfs_root		= vfs_root_9p,
+//	.vfs_quotactl	= vfs_quotactl_9p,
 	.vfs_getattr	= vfs_getattr_9p,
+	.vfs_sync		= vfs_sync_9p,
+	.vfs_vget		= vfs_vget_9p,
+//	.vfs_fhtovp		= vfs_fhtovp_9p,
+//	.vfs_vptofh		= vfs_vptofh_9p,
+//	.vfs_init		= vfs_init_9p,
+//	.vfs_sysctl		= vfs_sysctl_9p,
+//	.vfs_setattr	= vfs_setattr_9p,
 };
 
 extern struct vnodeopv_desc vnodeopv_desc_9p;
@@ -387,12 +427,13 @@ static struct vnodeopv_desc *vnodeopv_desc_9p_list[] = {
 	&vnodeopv_desc_9p
 };
 
+
 static struct vfs_fsentry vfs_fsentry_9p = {
 	.vfe_vfsops		= &vfsops_9p,
 	.vfe_vopcnt		= nelem(vnodeopv_desc_9p_list),
 	.vfe_opvdescs	= vnodeopv_desc_9p_list,
 	.vfe_fsname		= VFS9PNAME,
-	.vfe_flags		= VFS_TBLTHREADSAFE|VFS_TBLNOTYPENUM|VFS_TBL64BITREADY
+	.vfe_flags		= VFS_TBLTHREADSAFE|VFS_TBLFSNODELOCK|VFS_TBLNOTYPENUM|VFS_TBL64BITREADY|VFS_TBLREADDIR_EXTENDED
 };
 
 static vfstable_t vfstable_9p;
@@ -406,10 +447,9 @@ kext_start_9p(kmod_info_t *ki, void *d)
 
 	TRACE();
 	lck_grp_9p = lck_grp_alloc_init(VFS9PNAME, LCK_GRP_ATTR_NULL);
-	if ((e=vfs_fsadd(&vfs_fsentry_9p, &vfstable_9p))) {
-		DEBUG("vfs_fsadd: %d", e);
+	if ((e=vfs_fsadd(&vfs_fsentry_9p, &vfstable_9p)))
 		return KERN_FAILURE;
-	}
+
 	return KERN_SUCCESS;
 }
 

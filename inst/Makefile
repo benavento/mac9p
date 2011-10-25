@@ -11,6 +11,8 @@ PKGRESDIR=$(PKG)/Contents/Resources
 PKGRESFILES=\
 	License.rtf\
 	Welcome.rtf\
+	InstallationCheck\
+	InstallationCheck.strings\
 #	background.tiff\
 
 PKGDEP=\
@@ -18,6 +20,9 @@ PKGDEP=\
 	../mount/mount_9p\
 	../load/load_9p\
 	../plugin/9p\
+	FSInfo.plist\
+	KEInfo.plist\
+	NPInfo.plist\
 	$(PKGRESFILES)
 
 all: pkg dmg
@@ -34,14 +39,19 @@ $(PKG): $(PKGDEP)
 	cp -pX FSInfo.plist $(FSDIR)/Contents/Info.plist
 	mkdir -p $(FSDIR)/Contents/Resources
 	cp -pX ../mount/mount_9p $(FSDIR)/Contents/Resources
-#	mkdir -p $(NPDIR)/Contents
-#	cp -pX NPInfo.plist $(NPDIR)/Contents/Info.plist
-#	mkdir -p $(NPDIR)/Contents/MacOS
-#	cp -pX ../plugin/9p $(NPDIR)/Contents/MacOS/9p
+	mkdir -p $(NPDIR)/Contents
+	cp -pX NPInfo.plist $(NPDIR)/Contents/Info.plist
+	mkdir -p $(NPDIR)/Contents/MacOS
+	cp -pX ../plugin/9p $(NPDIR)/Contents/MacOS/9p
 	sudo chown -R root:wheel $(PKGROOT)
 	sudo chmod u+s $(KEDIR)/Contents/Resources/load_9p
-	/Developer/usr/bin/packagemaker --root $(PKGROOT) --id com.lab-fgb.9p \
-		--domain system --no-recommend --root-volume-only --out $@
+	/Developer/usr/bin/packagemaker \
+		--root $(PKGROOT) \
+		--id com.lab-fgb.9p \
+		--domain system \
+		--no-recommend \
+		--root-volume-only \
+		--out $@
 	cp -pX $(PKGRESFILES) $(PKGRESDIR)
 	sudo rm -fr $(PKGROOT)
 
@@ -53,11 +63,11 @@ $(DMG): $(PKG) #volume.icns
 	cp -pRX $(PKG) $(VOLUME)
 #	cp -pX volume.icns $(VOLUME)/.VolumeIcon.icns
 #	/Developer/usr/bin/SetFile -a -C $(VOLUME)
-#	ln -s $(VOLUME)/$(PKGRESDIR)/License.rtf $(VOLUME)/License.rtf
+	ln -s $(VOLUME)/$(PKGRESDIR)/License.rtf $(VOLUME)/License.rtf
 	cp -pX Uninstall.tool $(VOLUME)
 #	cp -pX DS_Store $(VOLUME)/.DS_Store
 	hdiutil detach -quiet $(VOLUME)
-	hdiutil convert -quiet -format UDZO -imagekey zlib-level=9 $(TDMG) -o /tmp/$@
+	hdiutil convert -quiet -format UDBZ $(TDMG) -o /tmp/$@
 	mv -f /tmp/$@ $@
 	rm -f $(TDMG)
 

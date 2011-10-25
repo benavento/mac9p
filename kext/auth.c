@@ -263,13 +263,14 @@ error:
 }
 
 static int
-p9sk1(mount_9p* nmp, fid_9p afid, struct sockaddr *addr, char *uname, char *akey, off_t off)
+p9sk1(mount_9p* nmp, fid_9p afid, struct sockaddr *addr, char *uname, char *akey, uint64_t off)
 {
 	char cchal[CHALLEN], *tbuf, *trbuf;
-	int e, l;
+	uint32_t l;
 	Authenticator auth;
 	Ticketreq tr;
 	Ticket t;
+	int e;
 
 	TRACE();
 	tbuf = malloc_9p(TICKETLEN+TICKETLEN+AUTHENTLEN);
@@ -296,7 +297,7 @@ p9sk1(mount_9p* nmp, fid_9p afid, struct sockaddr *addr, char *uname, char *akey
 		goto error;
 	}
 
-	DEBUG("authdom: %s", tr.authdom);
+	// DEBUG("authdom: %s", tr.authdom);
 
 	tr.type = AuthTreq;
 	bcopy(uname, tr.hostid, NAMELEN);
@@ -359,8 +360,9 @@ __private_extern__ int
 authp9any_9p(mount_9p *nmp, fid_9p afid, struct sockaddr *addr, char *uname, char *akey)
 {
 	char *buf, *buf2, *dom, *p, *q;
-	off_t off;
-	int e, n, l, v2;
+	uint32_t n, l;
+	uint64_t off;
+	int e, v2;
 
 	TRACE();
 	buf = malloc_9p(BSIZ);
@@ -373,7 +375,7 @@ authp9any_9p(mount_9p *nmp, fid_9p afid, struct sockaddr *addr, char *uname, cha
 
 	off += l;
 	buf[l] = '\0';
-	DEBUG("%s", buf);
+	// DEBUG("%s", buf);
 	v2 = 0;
 	p = buf;
 	if (strncmp(p, "v.2 ", 4) == 0) {

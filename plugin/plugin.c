@@ -22,16 +22,16 @@ typedef struct {
 } Context9P;
 
 static netfsError
-CreateSessionRef9P(void **sessionRef)
+CreateSessionRef9P(void **vp)
 {
 	Context9P *ctx;
 	int e;
 
 	TRACE();
-	if (sessionRef == NULL)
+	if (vp == NULL)
 		return EINVAL;
 
-	*sessionRef = NULL;
+	*vp = NULL;
 	ctx = malloc(sizeof(*ctx));
 	if (ctx == NULL)
 		return ENOMEM;
@@ -41,7 +41,7 @@ CreateSessionRef9P(void **sessionRef)
 		free(ctx);
 		return e;
 	}
-	*sessionRef = ctx;
+	*vp = ctx;
 
 	return 0;
 }
@@ -54,9 +54,12 @@ CreateDict9P(void)
 }
 
 static netfsError
-GetServerInfo9P(CFURLRef url, void *sessionRef, CFDictionaryRef options, CFDictionaryRef *params)
+GetServerInfo9P(CFURLRef url, void *v, CFDictionaryRef opts, CFDictionaryRef *params)
 {
-    CFMutableDictionaryRef dict;
+#pragma unused(v)
+#pragma unused(opts)
+
+	CFMutableDictionaryRef dict;
 	CFStringRef host;
 
 	TRACE();
@@ -67,7 +70,8 @@ GetServerInfo9P(CFURLRef url, void *sessionRef, CFDictionaryRef options, CFDicti
 	if (dict == NULL)
 		return ENOMEM;
 
-	if ((host=CFURLCopyHostName(url))) {
+	host = CFURLCopyHostName(url);
+	if (host != NULL) {
 		CFDictionarySetValue(dict, kNetFSServerDisplayNameKey, host);
 		CFRelease(host);
 	}
@@ -83,7 +87,7 @@ GetServerInfo9P(CFURLRef url, void *sessionRef, CFDictionaryRef options, CFDicti
 static netfsError
 ParseURL9P(CFURLRef url, CFDictionaryRef *params)
 {
-    CFMutableDictionaryRef dict;
+	CFMutableDictionaryRef dict;
 	CFStringRef str;
 	SInt32 port;
 	int e;
@@ -217,14 +221,14 @@ error:
 }
 
 static netfsError
-OpenSession9P(CFURLRef url, void *sessionRef, CFDictionaryRef options, CFDictionaryRef *info)
+OpenSession9P(CFURLRef url, void *v, CFDictionaryRef opts, CFDictionaryRef *info)
 {
-    CFMutableDictionaryRef dict;
+	CFMutableDictionaryRef dict;
 	Context9P *ctx;
 	int useGuest, e;
 
 	TRACE();
-	ctx = sessionRef;
+	ctx = v;
 	if (ctx==NULL || url==NULL || info==NULL)
 		return EINVAL;
 
@@ -233,8 +237,8 @@ OpenSession9P(CFURLRef url, void *sessionRef, CFDictionaryRef options, CFDiction
 		return ENOMEM;
 
 	useGuest = FALSE;
-	if (options != NULL) {
-		CFBooleanRef boolean = CFDictionaryGetValue(options, kNetFSUseGuestKey);
+	if (opts != NULL) {
+		CFBooleanRef boolean = CFDictionaryGetValue(opts, kNetFSUseGuestKey);
 		if (boolean != NULL)
 			useGuest = CFBooleanGetValue(boolean);
 	}
@@ -250,8 +254,9 @@ DEBUG("url=%s", NetFSCFStringtoCString(CFURLGetString(url)));
 DEBUG("user=%s", NetFSCFStringtoCString(str));
 
 		CFDictionarySetValue(dict, kNetFSMountedByUserKey, str);
-		CFRelease(str);
+//		CFRelease(str);
 	}
+DEBUG("return 0");
 	return 0;
 	
 error:
@@ -262,22 +267,28 @@ error:
 }
 
 static netfsError
-EnumerateShares9P(void *sessionRef, CFDictionaryRef options, CFDictionaryRef *points) 
+EnumerateShares9P(void *v, CFDictionaryRef opts, CFDictionaryRef *points) 
 {
+#pragma unused(v)
+#pragma unused(opts)
+#pragma unused(points)
+
 	TRACE();
 	return ENOTSUP;
 }
 
 static netfsError
-Mount9P(void *sessionRef, CFURLRef url, CFStringRef mntpoint, CFDictionaryRef options, CFDictionaryRef *info)
+Mount9P(void *v, CFURLRef url, CFStringRef mntpoint, CFDictionaryRef opts, CFDictionaryRef *info)
 {
-    CFMutableDictionaryRef dict;
+#pragma unused(opts)
+
+	CFMutableDictionaryRef dict;
 	Context9P *ctx;
 	CFStringRef str;
 	int e;
 
 	TRACE();
-	ctx = sessionRef;
+	ctx = v;
 	if (ctx==NULL || url==NULL || mntpoint==NULL || info==NULL)
 		return EINVAL;
 
@@ -302,23 +313,25 @@ error:
 }
 
 static netfsError
-Cancel9P(void *sessionRef)
+Cancel9P(void *v)
 {
+#pragma unused(v)
+
 	TRACE();
 	return 0;
 }
 
 static netfsError
-CloseSession9P(void *sessionRef)
+CloseSession9P(void *v)
 {
 	Context9P *ctx;
 
 	TRACE();
-	ctx = sessionRef;
+	ctx = v;
 	if (ctx == NULL)
 		return EINVAL;
 
-	Cancel9P(sessionRef);
+	Cancel9P(v);
 	pthread_mutex_destroy(&ctx->mutex);
 	free(ctx->url);
 	free(ctx->user);
@@ -332,7 +345,7 @@ static netfsError
 GetMountInfo9P(CFStringRef point, CFDictionaryRef *info)
 {
 	CFMutableDictionaryRef dict;
-    struct statfs st;
+	struct statfs st;
 	CFStringRef url;
 	char *path, *curl;
 	int e, n;
@@ -342,7 +355,7 @@ GetMountInfo9P(CFStringRef point, CFDictionaryRef *info)
 		return EINVAL;
 
 	curl = path = NULL;
-    *info = dict = CreateDict9P();
+	*info = dict = CreateDict9P();
 	if (dict == NULL)
 		goto error;
 
@@ -361,8 +374,8 @@ GetMountInfo9P(CFStringRef point, CFDictionaryRef *info)
 	strlcpy(curl, PREFIX_9P, n);
 	strlcat(curl, st.f_mntfromname, n);
 
-    url = CFStringCreateWithCString(kCFAllocatorDefault, curl, kCFStringEncodingUTF8);
-    if (url == NULL)
+	url = CFStringCreateWithCString(kCFAllocatorDefault, curl, kCFStringEncodingUTF8);
+	if (url == NULL)
 		goto error;
 
 	CFDictionarySetValue(dict, kNetFSMountedURLKey, url);
@@ -382,10 +395,10 @@ error:
 
 static NetFSMountInterface_V1 gNetFSMountInterfaceFTbl9P = {
 	/* IUNKNOWN_C_GUTS */
-    ._reserved			= NULL,
-    .QueryInterface		= NetFSQueryInterface,
-    .AddRef				= NetFSInterface_AddRef,
-    .Release			= NetFSInterface_Release,
+	._reserved			= NULL,
+	.QueryInterface		= NetFSQueryInterface,
+	.AddRef				= NetFSInterface_AddRef,
+	.Release			= NetFSInterface_Release,
 
 	/* NetFS */
 	.CreateSessionRef	= CreateSessionRef9P,
@@ -403,6 +416,8 @@ static NetFSMountInterface_V1 gNetFSMountInterfaceFTbl9P = {
 void*
 NetFSInterfaceFactory9P(CFAllocatorRef allocator, CFUUIDRef typeID)
 {
+#pragma unused(allocator)
+
 	TRACE();
 	if (!CFEqual(typeID, kNetFSTypeID))
 		return NULL;

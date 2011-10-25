@@ -5,12 +5,13 @@
 #define nextfid(n)	(OSIncrementAtomic(&nmp->nfid))
 
 static int
-dupname(char *name, int nname, char **sp)
+strndup(char *name, int nname, char **sp)
 {
 	char *s;
 
 	if (!name || nname<=0)
 		return EINVAL;
+
 	s = malloc_9p(nname+1);
 	if (s == NULL)
 		return ENOMEM;
@@ -21,29 +22,23 @@ dupname(char *name, int nname, char **sp)
 }
 
 __private_extern__ int
-version_9p(mount_9p *nmp, char *vers, uint32_t ms, char **versp, uint32_t *msp)
+version_9p(mount_9p *nmp, char *vers, char **versp)
 {
 	Fcall tx, rx;
 	void *p;
 	int e;
 
 	TRACE();
-	nmp->msize = ms;
 	tx.tag = (uint16_t)NOTAG;
 	tx.type = Tversion;
 	tx.version = vers;
-	tx.msize = ms;
-	if ((e=rpc_9p(nmp, &tx, &rx, &p))) {
-		DEBUG("rpc_9p");
+	tx.msize = nmp->msize = sizeof(nmp->rpcbuf);
+	if ((e=rpc_9p(nmp, &tx, &rx, &p)))
 		return e;
-	}
-	if (rx.msize > sizeof(nmp->rpcbuf))
-		rx.msize = sizeof(nmp->rpcbuf);
 
-	*msp = rx.msize;
-	e = dupname(rx.version, strlen(rx.version), versp);
+	nmp->msize = MIN(rx.msize, sizeof(nmp->rpcbuf));
+	e = strndup(rx.version, strlen(rx.version), versp);
 	free_9p(p);
-	DEBUG("e: %d", e);
 	return e;
 }
 
@@ -102,15 +97,13 @@ walk_9p(mount_9p *nmp, fid_9p fid, char *name, int nname, fid_9p *fidp, qid_9p *
 	int e;
 	
 	TRACE();
-	if(nname > MAXPATHLEN)
-		return ENAMETOOLONG;
 	tx.type = Twalk;
 	tx.fid = fid;
 	tx.newfid = nextfid(nmp);
 	tx.nwname = 0;
 	s = NULL;
-	if(name && nname>0){
-		if ((e=dupname(name, nname, &s)))
+	if(name){
+		if ((e=strndup(name, nname, &s)))
 			return e;
 		tx.nwname = 1;
 		tx.wname[0] = s;
@@ -135,15 +128,13 @@ opencreate_9p(int type, mount_9p *nmp, fid_9p fid, char *name, int nname, uint8_
 	char *s;
 	int e;
 
-//	TRACE();
+	TRACE();
 	tx.type = type;
 	tx.fid = fid;
 	tx.mode = mode;
 	s = NULL;
 	if (type == Tcreate) {
-		if (!nname || nname<=0)
-			return EINVAL;
-		if((e=dupname(name, nname, &s)))
+		if((e=strndup(name, nname, &s)))
 			return e;
 		tx.name = s;
 		tx.perm = perm;
@@ -175,19 +166,13 @@ create_9p(mount_9p *nmp, fid_9p fid, char *name, int nname, uint8_t mode, uint32
 }
 
 static int
-rdwr_9p(int type, mount_9p *nmp, fid_9p fid, void *buf, int count, off_t off, int *countp)
+rdwr_9p(int type, mount_9p *nmp, fid_9p fid, void *buf, uint32_t count, uint64_t off, uint32_t *countp)
 {
 	Fcall tx, rx;
 	void *p;
 	int e;
-	
-//	TRACE();
-	if (count < 0)
-		return EINVAL;
 
-	if((uint)count > nmp->msize-IOHDRSZ)
-		count = nmp->msize-IOHDRSZ;
-
+	count = MIN(count, nmp->msize-IOHDRSZ);
 	*countp = 0;
 	tx.type = type;
 	tx.fid = fid;
@@ -199,11 +184,8 @@ rdwr_9p(int type, mount_9p *nmp, fid_9p fid, void *buf, int count, off_t off, in
 	if ((e=rpc_9p(nmp, &tx, &rx, &p)))
 		return e;
 
-	if (p == NULL)
-		panic("what happened with p");
-
 	if (type == Tread) {
-		if (rx.count > (uint)count){
+		if (rx.count > count){
 			DEBUG("rx.count > count: %u > %d", rx.count, count);
 			rx.count = count;
 		}
@@ -216,14 +198,14 @@ rdwr_9p(int type, mount_9p *nmp, fid_9p fid, void *buf, int count, off_t off, in
 }
 
 __private_extern__ int
-read_9p(mount_9p *nmp, fid_9p fid, void *buf, int count, off_t off, int *nread)
+read_9p(mount_9p *nmp, fid_9p fid, void *buf, uint32_t count, uint64_t off, uint32_t *nread)
 {
 	TRACE();
 	return rdwr_9p(Tread, nmp, fid, buf, count, off, nread);
 }
 
 __private_extern__ int
-write_9p(mount_9p *nmp, fid_9p fid, void *buf, int count, off_t off, int *nwrite)
+write_9p(mount_9p *nmp, fid_9p fid, void *buf, uint32_t count, uint64_t off, uint32_t *nwrite)
 {
 	TRACE();
 	return rdwr_9p(Twrite, nmp, fid, buf, count, off, nwrite);
@@ -285,6 +267,7 @@ stat_9p(mount_9p *nmp, fid_9p fid, dir_9p **dpp)
 	}
 
 	if(convM2D(rx.stat, rx.nstat, dp, (char*)&dp[1]) != rx.nstat) {
+		DEBUG("convM2D");
 		e = EBADRPC;
 		goto error;
 	}
@@ -300,7 +283,8 @@ wstat_9p(mount_9p *nmp, fid_9p fid, dir_9p *dp)
 {
 	Fcall tx, rx;
 	void *p;
-	int e, n;
+	uint32_t n;
+	int e;
 
 	TRACE();
 	n = sizeD2M(dp);
@@ -308,7 +292,7 @@ wstat_9p(mount_9p *nmp, fid_9p fid, dir_9p *dp)
 	if (p == NULL)
 		return ENOMEM;
 	
-	if(convD2M(dp, p, n) != (uint)n){
+	if(convD2M(dp, p, n) != n){
 		free_9p(p);
 		return EINVAL;
 	}
@@ -323,10 +307,11 @@ wstat_9p(mount_9p *nmp, fid_9p fid, dir_9p *dp)
 }
 
 static int
-dirpackage(uint8_t *buf, int ts, Dir **d, int *nd)
+dirpackage(uint8_t *buf, int ts, Dir **d, uint32_t *nd)
 {
 	char *s;
-	int ss, i, n, nn, m;
+	int ss, i, n, nn;
+	uint m;
 	
 	*d = nil;
 	*nd = 0;
@@ -347,7 +332,7 @@ dirpackage(uint8_t *buf, int ts, Dir **d, int *nd)
 	}
 
 	if(i != ts) {
-		DEBUG("bad statcheck");
+		DEBUG("statcheck");
 		return EBADRPC;
 	}
 	
@@ -360,10 +345,11 @@ dirpackage(uint8_t *buf, int ts, Dir **d, int *nd)
 	s = (char*)*d + n * sizeof(Dir);
 	nn = 0;
 	for(i = 0; i < ts; i += m){
-		m = BIT16SZ + GBIT16((uchar*)&buf[i]);
-		if(nn >= n || convM2D(&buf[i], m, *d + nn, s) != (uint)m){
+		m = BIT16SZ + GBIT16(&buf[i]);
+		if(nn >= n || convM2D(&buf[i], m, *d + nn, s) != m){
 			free_9p(*d);
 			*d = nil;
+			DEBUG("convM2D");
 			return EBADRPC;
 		}
 		nn++;
@@ -373,27 +359,56 @@ dirpackage(uint8_t *buf, int ts, Dir **d, int *nd)
 	return 0;
 }
 
-enum
-{
-	DIRSIZE	= STATFIXLEN + 32 * 4		/* enough for encoded stat buf + some reasonable strings */
-};
-
 __private_extern__ int
-readdir_9p(mount_9p *nmp, fid_9p fid, off_t off, dir_9p **d, int *nd, int *nrd)
+readdir_9p(mount_9p *nmp, fid_9p fid, off_t off, dir_9p **d, uint32_t *nd, uint32_t *nrd)
 {
 	void *p;
 	int e;
-
+	
 	TRACE();
 	*d = NULL;
 	*nd = 0;
 	*nrd = 0;
-	p = malloc_9p(nmp->msize-IOHDRSZ);
+	p = malloc_9p(DIRMAX);
 	if (p == NULL)
 		return ENOMEM;
-	e = read_9p(nmp, fid, p, nmp->msize-IOHDRSZ, off, nrd);
+
+	e = read_9p(nmp, fid, p, DIRMAX, off, nrd);
 	if (!e)
 		e = dirpackage(p, *nrd, d, nd);
+	free_9p(p);
+	return e;
+}
+
+__private_extern__ int
+readdirs_9p(mount_9p *nmp, fid_9p fid, dir_9p **d, uint32_t *nd)
+{
+	uint8_t *p, *newp;
+	uint32_t n;
+	int e, ts;
+
+	TRACE();
+	*d = NULL;
+	*nd = 0;
+	ts = 0;
+	p = NULL;
+	for (;;) {
+		newp = malloc_9p(ts+DIRMAX);
+		if (newp == NULL) {
+			e = ENOMEM;
+			break;
+		}
+		bcopy(p, newp, ts);
+		free_9p(p);
+		p = newp;
+		if ((e=read_9p(nmp, fid, p+ts, DIRMAX, ts, &n)) || n==0)
+			break;
+		ts += n;
+	}
+
+	if (!e)
+		e = dirpackage(p, ts, d, nd);
+
 	free_9p(p);
 	return e;
 }

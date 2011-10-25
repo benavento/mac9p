@@ -64,11 +64,12 @@ static int
 recvmsg_9p(socket_t so, Fcall *rx, size_t msize, void **freep)
 {
 	uint8_t bit32[8], *p;
-	uint n, nn;
+	uint32_t n, nn;
 	int e;
 
 //	TRACE();
 	p = NULL;
+    bzero(rx, sizeof(*rx));
 	if ((e=recvn_9p(so, bit32, BIT32SZ)))
 		goto error;
 
@@ -206,9 +207,7 @@ connect_9p(mount_9p *nmp, struct sockaddr *sa)
 	lck_mtx_unlock(nmp->lck);
 
 error:
-	lck_mtx_lock(nmp->lck);
-	CLR(nmp->soflags, F_SOCK_CONNECTING);
-	lck_mtx_unlock(nmp->lck);
+	OSBitAndAtomic(~F_SOCK_CONNECTING, &nmp->soflags);
 	return e;
 }
 
@@ -226,22 +225,6 @@ disconnect_9p(mount_9p *nmp)
 		return;
 	sock_shutdown(so, SHUT_RDWR);
 	sock_close(so);
-}
-
-__private_extern__ int
-setbufsize_9p(mount_9p *nmp)
-{
-	int e, o;
-
-	TRACE();
-	lck_mtx_lock(nmp->lck);
-	e = 0;
-	o = nmp->msize;
-	e |= sock_setsockopt(nmp->so, SOL_SOCKET, SO_SNDBUF, &o, sizeof(o));
-	e |= sock_setsockopt(nmp->so, SOL_SOCKET, SO_RCVBUF, &o, sizeof(o));
-	lck_mtx_unlock(nmp->lck);
-
-	return e;
 }
 
 static int
@@ -306,11 +289,9 @@ rpc_9p(mount_9p *nmp, Fcall *tx, Fcall *rx, void **freep)
 	}
 	r->nmp = nmp;
 	/* set tag */
-	if (tx->tag != (uint16_t)NOTAG) {
-		lck_mtx_lock(nmp->lck);
-		tx->tag = nmp->ntag++;
-		lck_mtx_unlock(nmp->lck);
-	}
+	if (tx->tag != (uint16_t)NOTAG)
+		tx->tag = OSIncrementAtomic16((int16_t*)&nmp->ntag);
+
 	r->tx = tx;
 	r->rx = rx;
 
@@ -346,10 +327,15 @@ rpc_9p(mount_9p *nmp, Fcall *tx, Fcall *rx, void **freep)
 	/* error? */
 	if (r->error)
 		e = r->error;
-	else if (rx->type != tx->type+1)
+	else if (rx->type == Rerror) {
+		if (rx->ename)
+			e = ename2errno(rx->ename);
+		else
+			e = EIO;
+	} else if (rx->type != tx->type+1) {
+		DEBUG("bad reply type: %d %d", tx->type, rx->type);
 		e = EBADRPC;
-	else if (rx->type == Rerror)
-		e = ename2errno(rx->ename);
+	}
 
 	if (e || !freep)
 		free_9p(r->rdata);
@@ -382,7 +368,7 @@ rpc_9p(mount_9p *nmp, Fcall *tx, Fcall *rx, void **freep)
 
 	/* we are already locked */
 	if (tx->tag != (uint16_t)NOTAG)
-		tx->tag = nmp->ntag++;
+		tx->tag = OSIncrementAtomic16((int16_t*)&nmp->ntag);
 
 	n = convS2M(tx, nmp->rpcbuf, nmp->msize);
 	if (n == 0) {
@@ -398,12 +384,13 @@ rpc_9p(mount_9p *nmp, Fcall *tx, Fcall *rx, void **freep)
 
 	if (ISSET(nmp->flags, FLAG_CHATTY9P))
 		printFcall(rx);
-	if (rx->type != tx->type+1)
-		e = EBADRPC;
-	else if (rx->type == Rerror) {
+	if (rx->type == Rerror)
 		e = ename2errno(rx->ename);
-		DEBUG("Rerror : %s", rx->ename);
+	else if (rx->type != tx->type+1) {
+		DEBUG("bad reply type: %d %d", tx->type, rx->type);
+		e = EBADRPC;
 	}
+
 	if (e || !freep)
 		free_9p(p);
 	else
@@ -459,9 +446,9 @@ static struct {
 	{ EBUSY,			"walk -- too many (system wide)"				},
 	{ ECHILD,			"no living children"							},
 	{ ECONNREFUSED,		"connection refused"							},
-	{ ECONNREFUSED,		"connection refused"							},
 	{ EEXIST,			"create -- file exists"							},
 	{ EEXIST,			"file already exists"							},
+	{ EFBIG,			"file too big"									},
 	{ EINTR,			"interrupted"									},
 	{ EINVAL,			"attach -- bad specifier"						},
 	{ EINVAL,			"attach -- privileged user"						},
@@ -499,8 +486,7 @@ static struct {
 	{ EMFILE,			"no free file descriptors"						},
 	{ ENOBUFS,			"insufficient buffer space"						},
 	{ ENOBUFS,			"no free Blocks"								},
-	{ ENOENT,			"directory entry not found"						},
-	{ ENOENT,			"does not exist"								},
+	{ ENOENT,			"file does not exist"							},
 	{ ENOEXEC,			"exec header invalid"							},
 	{ ENOMEM,			"kernel allocate failed"						},
 	{ ENOMEM,			"no free memory"								},
@@ -527,31 +513,18 @@ static struct {
 	{ ESHUTDOWN,		"i/o on hungup channel"							},
 	{ ESPIPE,			"seek on a stream"								},
 	{ ESRCH,			"process exited"								},
+	{ ESTALE,			"/boot/fossil: fid not found"					},
+	{ ESTALE,			"file has been removed"							},
 	{ ETIMEDOUT,		"connection timed out"							},
 };
-
-static char*
-strcasestr(char *a, char *b)
-{
-	int na, nb;
-
-	if (!a || !b)
-		return NULL;
-
-	for (na=strlen(a), nb=strlen(b); na > nb; a++, na--)
-		if (strncasecmp(a, b, nb) == 0)
-			return a;
-
-	return NULL;
-}
 
 static int
 ename2errno(char *s)
 {
 	uint i;
-	
+
 	for (i=0; i<nelem(errtab); i++)
-		if (strcasestr(s, errtab[i].s) != 0)
+		if (strcmp(s, errtab[i].s) == 0)
 			return errtab[i].i;
 
 	DEBUG("ENAME: %s", s);
