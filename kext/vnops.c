@@ -553,7 +553,7 @@ static int
 nread_9p(node_9p *np, uio_t uio)
 {
 	openfid_9p *op;
-	uint32_t n, l;
+	uint32_t n, l, sz;
 	char *p;
 	int e;
 
@@ -563,14 +563,18 @@ nread_9p(node_9p *np, uio_t uio)
 		op = &np->openfid[ORDWR];
 	if (op->fid == NOFID)
 		return EBADF;
-	
-	p = malloc_9p(np->iounit);
+
+	sz = np->iounit;
+	if (sz == 0)
+		sz = np->nmp->msize-IOHDRSZ;
+
+	p = malloc_9p(sz);
 	if (p == NULL)
 		return ENOMEM;
 
 	e = 0;
 	while (uio_resid(uio) > 0) {
-		n = MIN(uio_resid(uio), np->iounit);
+		n = MIN(uio_resid(uio), sz);
 		if ((e=read_9p(np->nmp, op->fid, p, n, uio_offset(uio), &l)) || l==0)
 			break;
 		if ((e=uiomove(p, l, uio)))
@@ -617,7 +621,7 @@ nwrite_9p(node_9p *np, uio_t uio)
 {
 	openfid_9p *op;
 	user_ssize_t resid;
-	uint32_t l;
+	uint32_t l, sz;
 	off_t off;
 	char *p;
 	int n, e;
@@ -629,7 +633,11 @@ nwrite_9p(node_9p *np, uio_t uio)
 	if (op->fid == NOFID)
 		return EBADF;
 
-	p = malloc_9p(np->iounit);
+	sz = np->iounit;
+	if (sz == 0)
+		sz = np->nmp->msize-IOHDRSZ;
+
+	p = malloc_9p(sz);
 	if (p == NULL)
 		return ENOMEM;
 
@@ -638,7 +646,7 @@ nwrite_9p(node_9p *np, uio_t uio)
 		l = 0;
 		off = uio_offset(uio);
 		resid = uio_resid(uio);
-		n = MIN(resid, np->iounit);
+		n = MIN(resid, sz);
 		if ((e=uiomove(p, n, uio)))
 			break;
 		if ((e=write_9p(np->nmp, op->fid, p, n, off, &l)))
