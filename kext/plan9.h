@@ -28,6 +28,8 @@ typedef uint64_t u64int;
 #define QTMOUNT		0x10		/* type bit for mounted channel */
 #define QTAUTH		0x08
 #define QTFILE		0x00		/* plain file */
+#define QTSYMLINK	0x02 		/* symbolic link (Unix, 9P2000.u) */
+#define QTLINK		0x01		/* hard link (Unix, 9P2000.u) */
 
 /* bits in Dir.mode */
 #define DMDIR		0x80000000	/* mode bit for directories */
@@ -37,6 +39,13 @@ typedef uint64_t u64int;
 #define DMREAD		0x4		/* mode bit for read permission */
 #define DMWRITE		0x2		/* mode bit for write permission */
 #define DMEXEC		0x1		/* mode bit for execute permission */
+#define DMSYMLINK	0x02000000 	/* mode bit for symbolic link (Unix, 9P2000.u) */
+#define DMLINK		0x01000000 	/* mode bit for hard link (Unix, 9P2000.u) */
+#define DMDEVICE	0x00800000 	/* mode bit for device file (Unix, 9P2000.u) */
+#define DMNAMEDPIPE	0x00200000 	/* mode bit for named pipe (Unix, 9P2000.u) */
+#define DMSOCKET	0x00100000 	/* mode bit for socket (Unix, 9P2000.u) */
+#define DMSETUID	0x00080000 	/* mode bit for setuid (Unix, 9P2000.u) */
+#define DMSETGID	0x00040000 	/* mode bit for setgid (Unix, 9P2000.u) */
 
 typedef
 struct Qid
@@ -61,6 +70,12 @@ struct Dir {
 	char	*uid;	/* owner name */
 	char	*gid;	/* group name */
 	char	*muid;	/* last modifier name */
+
+	/* 9P2000.u extensions */
+	char	*ext;	/* special file descriptor */
+	uint	uidnum;	/* owner id */
+	uint	gidnum;	/* group id */
+	uint	muidnum;/* last modifier id */
 } Dir;
 
 #define	STATMAX	65535U	/* max length of machine-independent stat structure */

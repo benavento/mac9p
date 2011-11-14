@@ -19,32 +19,36 @@
 #include "fcall.h"
 #include "9p.h"
 
+#define STAT_NSTRINGS(dotu)	(dotu? 5: 4)
+#define STAT_FIX_LEN(dotu)	(STATFIXLEN + (dotu? STATUEXTRALEN: 0))
+
 __private_extern__
 uint
-sizeD2M(Dir *d)
+sizeD2M(Dir *d, int dotu)
 {
-	char *sv[4];
+	char *sv[5];
 	int i, ns;
 
 	sv[0] = d->name;
 	sv[1] = d->uid;
 	sv[2] = d->gid;
 	sv[3] = d->muid;
+	sv[4] = d->ext;
 
 	ns = 0;
-	for(i = 0; i < 4; i++)
+	for(i = 0; i < STAT_NSTRINGS(dotu); i++)
 		ns += strlen(sv[i]);
 
-	return STATFIXLEN + ns;
+	return ns + STAT_FIX_LEN(dotu);
 }
 
 __private_extern__
 uint
-convD2M(Dir *d, uchar *buf, uint nbuf)
+convD2M(Dir *d, uchar *buf, uint nbuf, int dotu)
 {
 	uchar *p, *ebuf;
-	char *sv[4];
-	int i, ns, nsv[4], ss;
+	char *sv[5];
+	int i, ns, nsv[5], ss;
 
 	if(nbuf < BIT16SZ)
 		return 0;
@@ -56,14 +60,15 @@ convD2M(Dir *d, uchar *buf, uint nbuf)
 	sv[1] = d->uid;
 	sv[2] = d->gid;
 	sv[3] = d->muid;
+	sv[4] = d->ext;
 
 	ns = 0;
-	for(i = 0; i < 4; i++){
+	for(i = 0; i < STAT_NSTRINGS(dotu); i++){
 		nsv[i] = strlen(sv[i]);
 		ns += nsv[i];
 	}
 
-	ss = STATFIXLEN + ns;
+	ss = ns + STAT_FIX_LEN(dotu);
 
 	/* set size befor erroring, so user can know how much is needed */
 	/* note that length excludes count field itself */
@@ -92,7 +97,7 @@ convD2M(Dir *d, uchar *buf, uint nbuf)
 	PBIT64(p, d->length);
 	p += BIT64SZ;
 
-	for(i = 0; i < 4; i++){
+	for(i = 0; i < STAT_NSTRINGS(dotu); i++){
 		ns = nsv[i];
 		if(p + ns + BIT16SZ > ebuf)
 			return 0;
@@ -100,6 +105,18 @@ convD2M(Dir *d, uchar *buf, uint nbuf)
 		p += BIT16SZ;
 		memmove(p, sv[i], ns);
 		p += ns;
+	}
+
+	if(dotu){
+		if(p+3*BIT32SZ > ebuf)
+			return 0;
+
+		PBIT32(p, d->uidnum);
+		p += BIT32SZ;
+		PBIT32(p, d->gidnum);
+		p += BIT32SZ;
+		PBIT32(p, d->muidnum);
+		p += BIT32SZ;
 	}
 
 	if(ss != p - buf)
@@ -110,16 +127,16 @@ convD2M(Dir *d, uchar *buf, uint nbuf)
 
 __private_extern__
 int
-statcheck(uchar *buf, uint nbuf)
+statcheck(uchar *buf, uint nbuf, int dotu)
 {
 	uchar *ebuf;
 	int i;
 
 	ebuf = buf + nbuf;
 
-	buf += STATFIXLEN - 4 * BIT16SZ;
+	buf += STAT_FIX_LEN(dotu) - STAT_NSTRINGS(dotu) * BIT16SZ;
 
-	for(i = 0; i < 4; i++){
+	for(i = 0; i < STAT_NSTRINGS(dotu); i++){
 		if(buf + BIT16SZ > ebuf)
 			return -1;
 		buf += BIT16SZ + GBIT16(buf);
@@ -135,10 +152,10 @@ static char nullstring[] = "";
 
 __private_extern__
 uint
-convM2D(uchar *buf, uint nbuf, Dir *d, char *strs)
+convM2D(uchar *buf, uint nbuf, Dir *d, char *strs, int dotu)
 {
 	uchar *p, *ebuf;
-	char *sv[4];
+	char *sv[5];
 	int i, ns;
 
 	p = buf;
@@ -168,8 +185,11 @@ convM2D(uchar *buf, uint nbuf, Dir *d, char *strs)
 	d->uid = nil;
 	d->gid = nil;
 	d->muid = nil;
+	d->ext = nil;
 
-	for(i = 0; i < 4; i++){
+	sv[4] = nil;
+
+	for(i = 0; i < STAT_NSTRINGS(dotu); i++){
 		if(p + BIT16SZ > ebuf)
 			return 0;
 		ns = GBIT16(p);
@@ -190,13 +210,27 @@ convM2D(uchar *buf, uint nbuf, Dir *d, char *strs)
 		d->uid = sv[1];
 		d->gid = sv[2];
 		d->muid = sv[3];
+		d->ext = sv[4];
 	}else{
 		d->name = nullstring;
 		d->uid = nullstring;
 		d->gid = nullstring;
 		d->muid = nullstring;
+		d->ext = nullstring;
 	}
 	
+	if(dotu) {
+		if(p+3*BIT32SZ > ebuf)
+			return 0;
+
+		d->uidnum = GBIT32(p);
+		p += BIT32SZ;
+		d->gidnum = GBIT32(p);
+		p += BIT32SZ;
+		d->muidnum = GBIT32(p);
+		p += BIT32SZ;
+ 	}
+
 	return p - buf;
 }
 
@@ -247,7 +281,7 @@ gqid(uchar *p, uchar *ep, Qid *q)
  */
 __private_extern__
 uint
-convM2S(uchar *ap, uint nap, Fcall *f)
+convM2S(uchar *ap, uint nap, Fcall *f, int dotu)
 {
 	uchar *p, *ep;
 	uint i, size;
@@ -314,6 +348,12 @@ convM2S(uchar *ap, uint nap, Fcall *f)
 		p = gstring(p, ep, &f->aname);
 		if(p == nil)
 			break;
+		if(dotu) {
+			if(p+BIT32SZ > ep)
+				return 0;
+			f->unamenum = GBIT32(p);
+			p += BIT32SZ;
+		}
 		break;
 
 /*
@@ -355,6 +395,12 @@ b
 		p = gstring(p, ep, &f->aname);
 		if(p == nil)
 			break;
+		if(dotu) {
+			if(p+BIT32SZ > ep)
+				return 0;
+			f->unamenum = GBIT32(p);
+			p += BIT32SZ;
+		}
 		break;
 
 
@@ -399,6 +445,8 @@ b
 		p += BIT32SZ;
 		f->mode = GBIT8(p);
 		p += BIT8SZ;
+		if(dotu)
+			p = gstring(p, ep, &f->ext);
 		break;
 
 	case Tread:
@@ -484,6 +532,14 @@ b
 
 	case Rerror:
 		p = gstring(p, ep, &f->ename);
+		if(p==nil)
+			break;
+		if(dotu) {
+			if(p+BIT32SZ > ep)
+				return 0;
+			f->errnum = GBIT32(p);
+			p += BIT32SZ;
+		}
 		break;
 
 	case Rflush:
@@ -623,7 +679,7 @@ stringsz(char *s)
 
 __private_extern__
 uint
-sizeS2M(Fcall *f)
+sizeS2M(Fcall *f, int dotu)
 {
 	uint n;
 	int i;
@@ -658,6 +714,8 @@ sizeS2M(Fcall *f)
 		n += BIT32SZ;
 		n += stringsz(f->uname);
 		n += stringsz(f->aname);
+		if(dotu)
+			n += BIT32SZ;
 		break;
 
 	case Tattach:
@@ -665,6 +723,8 @@ sizeS2M(Fcall *f)
 		n += BIT32SZ;
 		n += stringsz(f->uname);
 		n += stringsz(f->aname);
+		if(dotu)
+			n += BIT32SZ;
 		break;
 
 
@@ -686,6 +746,8 @@ sizeS2M(Fcall *f)
 		n += stringsz(f->name);
 		n += BIT32SZ;
 		n += BIT8SZ;
+		if(dotu)
+			n += stringsz(f->ext);
 		break;
 
 	case Tread:
@@ -734,6 +796,8 @@ sizeS2M(Fcall *f)
 */
 	case Rerror:
 		n += stringsz(f->ename);
+		if(dotu)
+			n += BIT32SZ;
 		break;
 
 	case Rflush:
@@ -795,12 +859,12 @@ sizeS2M(Fcall *f)
 
 __private_extern__
 uint
-convS2M(Fcall *f, uchar *ap, uint nap)
+convS2M(Fcall *f, uchar *ap, uint nap, int dotu)
 {
 	uchar *p;
 	uint i, size;
 
-	size = sizeS2M(f);
+	size = sizeS2M(f, dotu);
 	if(size == 0)
 		return 0;
 	if(size > nap)
@@ -845,6 +909,10 @@ convS2M(Fcall *f, uchar *ap, uint nap)
 		p += BIT32SZ;
 		p  = pstring(p, f->uname);
 		p  = pstring(p, f->aname);
+		if(dotu) {
+			PBIT32(p, f->unamenum);
+			p += BIT32SZ;
+		}
 		break;
 
 	case Tattach:
@@ -854,6 +922,10 @@ convS2M(Fcall *f, uchar *ap, uint nap)
 		p += BIT32SZ;
 		p  = pstring(p, f->uname);
 		p  = pstring(p, f->aname);
+		if(dotu) {
+			PBIT32(p, f->unamenum);
+			p += BIT32SZ;
+		}
 		break;
 
 	case Twalk:
@@ -884,6 +956,8 @@ convS2M(Fcall *f, uchar *ap, uint nap)
 		p += BIT32SZ;
 		PBIT8(p, f->mode);
 		p += BIT8SZ;
+		if(dotu)
+			p = pstring(p, f->ext);
 		break;
 
 	case Tread:
@@ -947,6 +1021,10 @@ convS2M(Fcall *f, uchar *ap, uint nap)
 
 	case Rerror:
 		p = pstring(p, f->ename);
+		if(dotu) {
+			PBIT32(p, f->errnum);
+			p += BIT32SZ;
+		}
 		break;
 
 	case Rflush:

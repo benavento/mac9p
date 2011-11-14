@@ -59,6 +59,42 @@ ngetdir_9p(node_9p *np)
 	return 0;
 }
 
+static void
+dirvtype_9p(dir_9p *dp, int dotu, enum vtype *typep, dev_t *devp)
+{
+	int32_t major, minor;
+	char c;
+
+	*devp = 0;
+	*typep = VREG;
+	if (ISSET(dp->qid.type, QTDIR))
+		*typep = VDIR;
+
+	if (!dotu)
+		return;
+
+	if (ISSET(dp->mode, DMSYMLINK)) {
+		*typep = VLNK;
+		return;
+	}
+
+	if (ISSET(dp->mode, DMNAMEDPIPE)) {
+		*typep = VFIFO;
+		return;
+	}
+	
+	if (ISSET(dp->mode, DMDEVICE) && dp->ext) {
+		if (sscanf(dp->ext, "%c %u %u", &c, &major, &minor) == 3) {
+			if (c == 'b')
+				*typep = VBLK;
+			else if (c == 'c') 
+				*typep = VCHR;
+			DEBUG("device %c major %d minor %d", *typep, major, minor);
+			*devp = (major<<20) | minor;
+		}
+	}
+}
+
 #define	HASH9P(nmp, k)	(&(nmp)->node[(k) & (nmp)->nodelen])
 __private_extern__ int
 nget_9p(mount_9p *nmp, fid_9p fid, qid_9p qid, vnode_t dvp, vnode_t *vpp, struct componentname *cnp, vfs_context_t ctx)
@@ -147,17 +183,16 @@ err1:
 	}
 
 	fsp.vnfs_mp			= nmp->mp;
-	fsp.vnfs_vtype		= (qid.type&QTDIR)? VDIR: VREG;
 	fsp.vnfs_str		= fsname;
 	fsp.vnfs_dvp		= dvp;
 	fsp.vnfs_fsnode		= np;
 	fsp.vnfs_vops		= vnode_op_9p;
 	fsp.vnfs_markroot	= dvp==NULL? TRUE: FALSE;
 	fsp.vnfs_marksystem	= FALSE;
-	fsp.vnfs_rdev		= 0;
 	fsp.vnfs_filesize	= np->dir.length;
 	fsp.vnfs_cnp		= cnp;
 	fsp.vnfs_flags		= VNFS_ADDFSREF;
+	dirvtype_9p(&np->dir, ISSET(nmp->flags, F_DOTU), &fsp.vnfs_vtype, &fsp.vnfs_rdev);
 	if (!dvp || !cnp || !ISSET(cnp->cn_flags, MAKEENTRY) || qid.vers==0)
 		SET(fsp.vnfs_flags, VNFS_NOCACHE);
 
@@ -279,25 +314,18 @@ error:
 #undef isdot
 
 static int
-vnop_create_9p(struct vnop_create_args *ap)
+ncreate_9p(vnode_t dvp, vnode_t *vpp, struct componentname *cnp, struct vnode_attr *vap, vfs_context_t ctx, char *target)
 {
-	struct componentname *cnp;
-	struct vnode_attr *vap;
 	openfid_9p *op;
 	mount_9p *nmp;
 	node_9p *dnp, *np;
-	vnode_t *vpp, dvp;
 	uint32_t perm, iounit;
 	uint8_t mode;
 	fid_9p fid, openfid;
 	qid_9p qid;
+	char *ext, buf[64];
 	int e;
-	
-	TRACE();
-	dvp = ap->a_dvp;
-	vpp = ap->a_vpp;
-	cnp = ap->a_cnp;
-	vap = ap->a_vap;
+
 	dnp = NTO9P(dvp);
 	nmp = dnp->nmp;
 	fid = NOFID;
@@ -307,31 +335,61 @@ vnop_create_9p(struct vnop_create_args *ap)
 	if (vnode_vfsisrdonly(dvp))
 		return EROFS;
 
-	if (vap->va_type!=VREG && vap->va_type!=VDIR)
+	if (!ISSET(nmp->flags, F_DOTU) && vap->va_type!=VREG && vap->va_type!=VDIR)
 		return ENOTSUP;
 
-	if (!ISSET(dnp->nmp->flags, FLAG_DSSTORE) &&
+	if (!ISSET(nmp->flags, FLAG_DSSTORE) &&
 		strncmp(".DS_Store", cnp->cn_nameptr, cnp->cn_namelen)==0)
 		return EINVAL;
 
-	nlock_9p(dnp, NODE_LCK_EXCLUSIVE);
-	if ((e=walk_9p(nmp, dnp->fid, NULL, 0, &openfid, &qid)))
-		goto error;
-
+	ext = "";
 	mode = ORDWR;
 	perm = MAKEIMODE(vap->va_type, vap->va_mode) & 0777;
-	if (vap->va_type == VDIR) {
+	switch (vap->va_type) {
+	case VREG:
+		break;
+
+	case VDIR:
 		mode = OREAD;
 		SET(perm, DMDIR);
+		break;
+
+	case VBLK:
+	case VCHR:
+		SET(perm, DMDEVICE);
+		snprintf(buf, sizeof(buf), "%c %d %d", vap->va_type==VBLK?'b':'c', vap->va_rdev>>20, vap->va_rdev&((1<<20) - 1));
+		ext = buf;
+		break;
+
+	case VFIFO:
+		SET(perm, DMNAMEDPIPE);
+		break;
+
+	case VSOCK:
+		SET(perm, DMSOCKET);
+		break;
+
+	case VLNK:
+		SET(perm, DMSYMLINK);
+		ext = target;
+		break;
+
+	default:
+		return EINVAL;
 	}
+	
 	if (ISSET(vap->va_vaflags, VA_EXCLUSIVE))
 		SET(mode, OEXCL);
 
-	if ((e=create_9p(nmp, openfid, cnp->cn_nameptr, cnp->cn_namelen, mode, perm, &qid, &iounit)))
+	
+	nlock_9p(dnp, NODE_LCK_EXCLUSIVE);
+	if ((e=walk_9p(nmp, dnp->fid, NULL, 0, &openfid, &qid)))
+		goto error;
+	if ((e=create_9p(nmp, openfid, cnp->cn_nameptr, cnp->cn_namelen, mode, perm, ext, &qid, &iounit)))
 		goto error;
 	if ((e=walk_9p(nmp, dnp->fid, cnp->cn_nameptr, cnp->cn_namelen, &fid, &qid)))
 		goto error;
-	if ((e=nget_9p(nmp, fid, qid, dvp, vpp, cnp, ap->a_context)))
+	if ((e=nget_9p(nmp, fid, qid, dvp, vpp, cnp, ctx)))
 		goto error;
 
 	cache_purge_negatives(dvp);
@@ -349,6 +407,20 @@ error:
 	clunk_9p(nmp, fid);
 	nunlock_9p(dnp);
 	return e;
+}
+
+static int
+vnop_create_9p(struct vnop_create_args *ap)
+{
+	TRACE();
+	return ncreate_9p(ap->a_dvp, ap->a_vpp, ap->a_cnp, ap->a_vap, ap->a_context, NULL);
+}
+
+static int
+vnop_mknod_9p(struct vnop_mknod_args *ap)
+{
+	TRACE();
+	return ncreate_9p(ap->a_dvp, ap->a_vpp, ap->a_cnp, ap->a_vap, ap->a_context, NULL);
 }
 
 static int
@@ -450,7 +522,9 @@ vnop_getattr_9p(struct vnop_getattr_args *ap)
 	struct vnode_attr *vap;
 	struct timespec ts;
 	node_9p *np;
-	int e;
+	enum vtype type;
+	dev_t rdev;
+	int e, dotu;
 
 	TRACE();
 	e = 0;
@@ -460,14 +534,20 @@ vnop_getattr_9p(struct vnop_getattr_args *ap)
 	if ((e=ngetdir_9p(np)))
 		goto error;
 
+	dotu = ISSET(np->nmp->flags, F_DOTU);
 	ts.tv_nsec	= 0;
 	vap = ap->a_vap;
 	VATTR_RETURN(vap, va_rdev, np->dir.dev);
 	VATTR_RETURN(vap, va_nlink, 1);
 	VATTR_RETURN(vap, va_data_size, np->dir.length);
 	VATTR_RETURN(vap, va_iosize, np->iounit);
-	VATTR_RETURN(vap, va_uid, np->nmp->uid);
-	VATTR_RETURN(vap, va_gid, np->nmp->gid);
+	if (dotu) {
+		VATTR_RETURN(vap, va_uid, np->dir.uidnum);
+		VATTR_RETURN(vap, va_gid, np->dir.gidnum);
+	} else {
+		VATTR_RETURN(vap, va_uid, np->nmp->uid);
+		VATTR_RETURN(vap, va_gid, np->nmp->gid);
+	}
 	VATTR_RETURN(vap, va_mode, np->dir.mode & 0777);
 	VATTR_RETURN(vap, va_flags, 0);
 	ts.tv_sec = np->dir.atime;
@@ -480,7 +560,11 @@ vnop_getattr_9p(struct vnop_getattr_args *ap)
 	VATTR_RETURN(vap, va_filerev, np->dir.qid.vers);
 	VATTR_RETURN(vap, va_gen, 0);
 	VATTR_RETURN(vap, va_encoding, 0x7E); /* utf-8 */
-	VATTR_RETURN(vap, va_type, (np->dir.qid.type&QTDIR)? VDIR: VREG);
+
+	dirvtype_9p(&np->dir, dotu, &type, &rdev);
+	VATTR_RETURN(vap, va_type, type);
+	VATTR_RETURN(vap, va_rdev, rdev);
+
 	/*
 	if (VATTR_IS_ACTIVE(vap, va_name) && !vnode_isvroot(ap->a_vp)) {
 		strlcpy(vap->va_name, dp->name, MAXPATHLEN);
@@ -496,7 +580,7 @@ static void
 nulldir(dir_9p *dp)
 {
 	memset(dp, ~0, sizeof(dir_9p));
-	dp->name = dp->uid = dp->gid = dp->muid = "";
+	dp->name = dp->uid = dp->gid = dp->muid = dp->ext = "";
 }
 
 static int
@@ -866,16 +950,8 @@ error:
 static int
 vnop_mkdir_9p(struct vnop_mkdir_args *ap)
 {
-	struct vnop_create_args a;
-
 	TRACE();
-	a.a_desc = &vnop_create_desc;
-	a.a_dvp = ap->a_dvp;
-	a.a_vpp = ap->a_vpp;
-	a.a_cnp = ap->a_cnp;
-	a.a_vap = ap->a_vap;
-	a.a_context = ap->a_context;
-	return vnop_create_9p(&a);
+	return ncreate_9p(ap->a_dvp, ap->a_vpp, ap->a_cnp, ap->a_vap, ap->a_context, NULL);
 }
 
 static int
@@ -890,6 +966,13 @@ vnop_rmdir_9p(struct vnop_rmdir_args *ap)
 	a.a_flags = 0;
 	a.a_context = ap->a_context;
 	return vnop_remove_9p(&a);
+}
+
+static int
+vnop_symlink_9p(struct vnop_symlink_args *ap)
+{
+	TRACE();
+	return ncreate_9p(ap->a_dvp, ap->a_vpp, ap->a_cnp, ap->a_vap, ap->a_context, ap->a_target);
 }
 
 #define DIRENT32_LEN(namlen) \
@@ -1213,12 +1296,37 @@ vnop_bwrite_9p(struct vnop_bwrite_args *ap)
 	return buf_bwrite(ap->a_bp);
 }
 
+static int
+vnop_readlink_9p(struct vnop_readlink_args *ap)
+{
+	node_9p *np;
+	uio_t uio;
+	int e;
+
+	TRACE();
+	e = 0;
+	np = NTO9P(ap->a_vp);
+	uio = ap->a_uio;
+	if (!ISSET(np->nmp->flags, F_DOTU))
+		return ENOTSUP;
+
+	nlock_9p(np, NODE_LCK_EXCLUSIVE);
+	if ((e=ngetdir_9p(np)))
+		goto error;
+
+	e = uiomove(np->dir.ext, strlen(np->dir.ext), uio);
+
+error:
+	nunlock_9p(np);
+	return e;
+}
+
 static struct vnodeopv_entry_desc vnode_entry_desc_9p[] ={
 	{ &vnop_default_desc,		(vnop_t*)vn_default_error	},
 	{ &vnop_lookup_desc,		(vnop_t*)vnop_lookup_9p		},
 	{ &vnop_create_desc,		(vnop_t*)vnop_create_9p		},
 //	{ &vnop_whiteout_desc,		(vnop_t*)	},	/* no white */
-//	{ &vnop_mknod_desc,			(vnop_t*)	},	/* no spec */
+	{ &vnop_mknod_desc,			(vnop_t*)vnop_mknod_9p		},
 	{ &vnop_open_desc,			(vnop_t*)vnop_open_9p		},
 	{ &vnop_close_desc,			(vnop_t*)vnop_close_9p		},
 //	{ &vnop_access_desc,		(vnop_t*)	},	/* vfs access */
@@ -1238,10 +1346,10 @@ static struct vnodeopv_entry_desc vnode_entry_desc_9p[] ={
 	{ &vnop_rename_desc,		(vnop_t*)vnop_rename_9p		},
 	{ &vnop_mkdir_desc,			(vnop_t*)vnop_mkdir_9p		},
 	{ &vnop_rmdir_desc,			(vnop_t*)vnop_rmdir_9p		},
-//	{ &vnop_symlink_desc,		(vnop_t*)	},	/* no links */
+	{ &vnop_symlink_desc,		(vnop_t*)vnop_symlink_9p	},
 	{ &vnop_readdir_desc,		(vnop_t*)vnop_readdir_9p	},
 //	{ &vnop_readdirattr_desc,	(vnop_t*)	},
-//	{ &vnop_readlink_desc,		(vnop_t*)	},	/* no links */
+	{ &vnop_readlink_desc,		(vnop_t*)vnop_readlink_9p	},
 //	{ &vnop_inactive_desc,		(vnop_t*)	},	/* no links */
 	{ &vnop_reclaim_desc,		(vnop_t*)vnop_reclaim_9p	},
 	{ &vnop_pathconf_desc,		(vnop_t*)vnop_pathconf_9p	},

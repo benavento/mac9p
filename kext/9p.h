@@ -3,6 +3,7 @@
 enum {
 	FLAG_CHATTY9P	= 1<<0,
 	FLAG_DSSTORE	= 1<<1,
+	FLAG_DOTU		= 1<<2,
 };
 
 typedef struct {
@@ -134,6 +135,7 @@ enum {
 	F_SENDLOCK			= 1<<4,
 	F_WAITSENDLOCK		= 1<<5,
 	F_UNMOUNTING		= 1<<6,
+	F_DOTU				= 1<<7,
 };
 
 struct mount_9p {
@@ -176,11 +178,11 @@ __private_extern__ int authp9any_9p(mount_9p*, fid_9p, struct sockaddr*, char*, 
 
 /* proto.c */
 __private_extern__ int version_9p(mount_9p*, char*, char**);
-__private_extern__ int auth_9p(mount_9p*, char*, char*, fid_9p*, qid_9p*);
-__private_extern__ int attach_9p(mount_9p*, char*, char*, fid_9p, fid_9p*, qid_9p*);
+__private_extern__ int auth_9p(mount_9p*, char*, char*, uint32_t, fid_9p*, qid_9p*);
+__private_extern__ int attach_9p(mount_9p*, char*, char*, fid_9p, uint32_t, fid_9p*, qid_9p*);
 __private_extern__ int walk_9p(mount_9p*, fid_9p, char*, int, fid_9p*, qid_9p*);
 __private_extern__ int open_9p(mount_9p*, fid_9p, uint8_t, qid_9p*, uint32_t*);
-__private_extern__ int create_9p(mount_9p*, fid_9p, char*, int, uint8_t, uint32_t, qid_9p*, uint32_t*);
+__private_extern__ int create_9p(mount_9p*, fid_9p, char*, int, uint8_t, uint32_t, char *ext, qid_9p*, uint32_t*);
 __private_extern__ int read_9p(mount_9p*, fid_9p, void*, uint32_t, uint64_t, uint32_t*);
 __private_extern__ int write_9p(mount_9p*, fid_9p, void*, uint32_t, uint64_t, uint32_t*);
 __private_extern__ int clunk_9p(mount_9p*, fid_9p);

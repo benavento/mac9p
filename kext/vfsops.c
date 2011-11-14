@@ -89,6 +89,7 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 	size_t size;
 	fid_9p fid;
 	qid_9p qid;
+	char *vers;
 	int e;
 
 	TRACE();
@@ -156,8 +157,14 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 		goto error;
 	if ((e=connect_9p(nmp, addr)))
 		goto error;
-	if ((e=version_9p(nmp, VERSION9P, &nmp->version)))
+
+	vers = VERSION9P;
+	if (ISSET(nmp->flags, FLAG_DOTU))
+		vers = VERSION9PDOTU;
+	if ((e=version_9p(nmp, vers, &nmp->version)))
 		goto error;
+	if (ISSET(nmp->flags, FLAG_DOTU) && strcmp(VERSION9PDOTU, nmp->version)==0)
+		SET(nmp->flags, F_DOTU);
 
 	nmp->afid = NOFID;
 	if (args.authaddr && args.authaddrlen && args.authkey) {
@@ -165,14 +172,14 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 			goto error;
 		if ((e=addrget_9p(args.authaddr, args.authaddrlen, &authaddr)))
 			goto error;
-		if ((e=auth_9p(nmp, nmp->uname, nmp->aname, &nmp->afid, &qid)))
+		if ((e=auth_9p(nmp, nmp->uname, nmp->aname, nmp->uid, &nmp->afid, &qid)))
 			goto error;
 		if (nmp->afid!=NOFID &&
 			(e=authp9any_9p(nmp, nmp->afid, authaddr, nmp->uname, authkey)))
 			goto error;
 		bzero(authkey, DESKEYLEN);
 	}
-	if ((e=attach_9p(nmp, nmp->uname, nmp->aname, nmp->afid, &fid, &qid)))
+	if ((e=attach_9p(nmp, nmp->uname, nmp->aname, nmp->afid, nmp->uid, &fid, &qid)))
 		goto error;
 
 	if ((e=nget_9p(nmp, fid, qid, NULL, &nmp->root, NULL, ctx)))

@@ -30,6 +30,7 @@ enum {
 	ALTF_CHATTY9P	= 1<<7,
 	ALTF_DSSTORE	= 1<<8,
 	ALTF_NOAUTH		= 1<<9,
+	ALTF_DOTU		= 1<<10,
 };
 
 struct mntopt mopts[] = {
@@ -44,6 +45,7 @@ struct mntopt mopts[] = {
 	{ "asrv",		0,	ALTF_ASRV,		1 },
 	{ "aport",		0,	ALTF_APORT,		1 },
 	{ "chatty9p",	0,	ALTF_CHATTY9P,	1 },
+	{ "dotu",		0,	ALTF_DOTU,		1 },
 
 	/* neg */
 	{ "dsstore",	1,	ALTF_DSSTORE,	1 },
@@ -54,7 +56,8 @@ struct mntopt mopts[] = {
 
 args_9p args = {
 	.volume = "9P",
-	.aname = ""
+	.aname = "",
+	.flags = FLAG_DSSTORE
 };
 
 
@@ -168,10 +171,9 @@ main(int argc, char *argv[])
 	char *port, *asrv, *aport;
 	char mntpath[MAXPATHLEN];
 	char pass[NAMELEN], akey[DESKEYLEN];
-	int flags, mntflags, altflags, noauth, c;
+	int mntflags, altflags, noauth, c;
 
 	getmnt_silent = 0;
-	flags = FLAG_DSSTORE;
 	mntflags = 0;
 	altflags = 0;
 	pass[0] = '\0';
@@ -206,9 +208,11 @@ main(int argc, char *argv[])
 				noauth = 1;
 			/* flags */
 			if (altflags & ALTF_CHATTY9P)
-				flags |= FLAG_CHATTY9P;
+				args.flags |= FLAG_CHATTY9P;
 			if (altflags & ALTF_DSSTORE)
-				flags &= ~FLAG_DSSTORE;
+				args.flags &= ~FLAG_DSSTORE;
+			if (altflags & ALTF_DOTU)
+				args.flags |= FLAG_DOTU;
 			freemntopts(mp);
 			break;
 		default:
@@ -255,7 +259,6 @@ main(int argc, char *argv[])
 	if (!args.uname)
 		args.uname = "none";
 
-	args.flags = flags;
 	args.spec = srv;
 	if (getvfsbyname(VFS9PNAME, &vfc) < 0) {
 		if (load9p() < 0)

@@ -43,7 +43,7 @@ version_9p(mount_9p *nmp, char *vers, char **versp)
 }
 
 __private_extern__ int
-auth_9p(mount_9p *nmp, char *uname, char *aname, fid_9p *fidp, qid_9p *qidp)
+auth_9p(mount_9p *nmp, char *uname, char *aname, uint32_t unamenum, fid_9p *fidp, qid_9p *qidp)
 {
 	Fcall tx, rx;
 	int e;
@@ -54,6 +54,7 @@ auth_9p(mount_9p *nmp, char *uname, char *aname, fid_9p *fidp, qid_9p *qidp)
 	*fidp = tx.afid = nextfid(nmp);
 	tx.uname = uname;
 	tx.aname = aname;
+	tx.unamenum = unamenum;
 	if ((e=rpc_9p(nmp, &tx, &rx, NULL))) {
 		if (rx.type == Rerror) 
 			e = 0;
@@ -68,7 +69,7 @@ auth_9p(mount_9p *nmp, char *uname, char *aname, fid_9p *fidp, qid_9p *qidp)
 }
 
 __private_extern__ int
-attach_9p(mount_9p *nmp, char *uname, char *aname, fid_9p afid, fid_9p *fidp, qid_9p *qidp)
+attach_9p(mount_9p *nmp, char *uname, char *aname, fid_9p afid, uint32_t unamenum, fid_9p *fidp, qid_9p *qidp)
 {
 	Fcall tx, rx;
 	int e;
@@ -80,6 +81,7 @@ attach_9p(mount_9p *nmp, char *uname, char *aname, fid_9p afid, fid_9p *fidp, qi
 	tx.fid = nextfid(nmp);
 	tx.uname = uname;
 	tx.aname = aname;
+	tx.unamenum = unamenum;
 	if((e=rpc_9p(nmp, &tx, &rx, NULL)))
 		return e;
 
@@ -122,7 +124,7 @@ walk_9p(mount_9p *nmp, fid_9p fid, char *name, int nname, fid_9p *fidp, qid_9p *
 }
 
 static int
-opencreate_9p(int type, mount_9p *nmp, fid_9p fid, char *name, int nname, uint8_t mode, uint32_t perm, qid_9p *qidp, uint32_t *iounit)
+opencreate_9p(int type, mount_9p *nmp, fid_9p fid, char *name, int nname, uint8_t mode, uint32_t perm, char *ext, qid_9p *qidp, uint32_t *iounit)
 {
 	Fcall tx, rx;
 	char *s;
@@ -138,6 +140,7 @@ opencreate_9p(int type, mount_9p *nmp, fid_9p fid, char *name, int nname, uint8_
 			return e;
 		tx.name = s;
 		tx.perm = perm;
+		tx.ext = ext;
 	}
 	e = rpc_9p(nmp, &tx, &rx, NULL);
 	free_9p(s);
@@ -154,15 +157,15 @@ __private_extern__ int
 open_9p(mount_9p *nmp, fid_9p fid, uint8_t mode, qid_9p *qidp, uint32_t *iounit)
 {
 	TRACE();
-	return opencreate_9p(Topen, nmp, fid, NULL, 0, mode, 0, qidp, iounit);
+	return opencreate_9p(Topen, nmp, fid, NULL, 0, mode, 0, nil, qidp, iounit);
 }
 
 
 __private_extern__ int
-create_9p(mount_9p *nmp, fid_9p fid, char *name, int nname, uint8_t mode, uint32_t perm, qid_9p *qidp, uint32_t *iounit)
+create_9p(mount_9p *nmp, fid_9p fid, char *name, int nname, uint8_t mode, uint32_t perm, char *ext, qid_9p *qidp, uint32_t *iounit)
 {
 	TRACE();
-	return opencreate_9p(Tcreate, nmp, fid, name, nname, mode, perm, qidp, iounit);
+	return opencreate_9p(Tcreate, nmp, fid, name, nname, mode, perm, ext, qidp, iounit);
 }
 
 static int
@@ -266,7 +269,7 @@ stat_9p(mount_9p *nmp, fid_9p fid, dir_9p **dpp)
 		goto error;
 	}
 
-	if(convM2D(rx.stat, rx.nstat, dp, (char*)&dp[1]) != rx.nstat) {
+	if(convM2D(rx.stat, rx.nstat, dp, (char*)&dp[1], ISSET(nmp->flags, F_DOTU)) != rx.nstat) {
 		DEBUG("convM2D");
 		e = EBADRPC;
 		goto error;
@@ -284,15 +287,16 @@ wstat_9p(mount_9p *nmp, fid_9p fid, dir_9p *dp)
 	Fcall tx, rx;
 	void *p;
 	uint32_t n;
-	int e;
+	int e, dotu;
 
 	TRACE();
-	n = sizeD2M(dp);
+	dotu = ISSET(nmp->flags, F_DOTU);
+	n = sizeD2M(dp, dotu);
 	p = malloc_9p(n);
 	if (p == NULL)
 		return ENOMEM;
 	
-	if(convD2M(dp, p, n) != n){
+	if(convD2M(dp, p, n, dotu) != n){
 		free_9p(p);
 		return EINVAL;
 	}
@@ -307,7 +311,7 @@ wstat_9p(mount_9p *nmp, fid_9p fid, dir_9p *dp)
 }
 
 static int
-dirpackage(uint8_t *buf, int ts, Dir **d, uint32_t *nd)
+dirpackage(uint8_t *buf, int ts, Dir **d, uint32_t *nd, int dotu)
 {
 	char *s;
 	int ss, i, n, nn;
@@ -325,7 +329,7 @@ dirpackage(uint8_t *buf, int ts, Dir **d, uint32_t *nd)
 	n = 0;
 	for(i = 0; i < ts; i += m){
 		m = BIT16SZ + GBIT16(&buf[i]);
-		if(statcheck(&buf[i], m) < 0)
+		if(statcheck(&buf[i], m, dotu) < 0)
 			break;
 		ss += m;
 		n++;
@@ -346,7 +350,7 @@ dirpackage(uint8_t *buf, int ts, Dir **d, uint32_t *nd)
 	nn = 0;
 	for(i = 0; i < ts; i += m){
 		m = BIT16SZ + GBIT16(&buf[i]);
-		if(nn >= n || convM2D(&buf[i], m, *d + nn, s) != m){
+		if(nn >= n || convM2D(&buf[i], m, *d + nn, s, dotu) != m){
 			free_9p(*d);
 			*d = nil;
 			DEBUG("convM2D");
@@ -375,7 +379,7 @@ readdir_9p(mount_9p *nmp, fid_9p fid, off_t off, dir_9p **d, uint32_t *nd, uint3
 
 	e = read_9p(nmp, fid, p, DIRMAX, off, nrd);
 	if (!e)
-		e = dirpackage(p, *nrd, d, nd);
+		e = dirpackage(p, *nrd, d, nd, ISSET(nmp->flags, F_DOTU));
 	free_9p(p);
 	return e;
 }
@@ -407,7 +411,7 @@ readdirs_9p(mount_9p *nmp, fid_9p fid, dir_9p **d, uint32_t *nd)
 	}
 
 	if (!e)
-		e = dirpackage(p, ts, d, nd);
+		e = dirpackage(p, ts, d, nd, ISSET(nmp->flags, F_DOTU));
 
 	free_9p(p);
 	return e;

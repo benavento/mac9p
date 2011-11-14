@@ -15,8 +15,9 @@
  REPRESENTATION OR WARRANTY OF ANY KIND CONCERNING THE MERCHANTABILITY
  OF THIS SOFTWARE OR ITS FITNESS FOR ANY PARTICULAR PURPOSE.
  */
-#define	VERSION9P	"9P2000"
-#define	MAXWELEM	16
+#define	VERSION9P		"9P2000"
+#define	VERSION9PDOTU	"9P2000.u"
+#define	MAXWELEM		16
 
 typedef
 struct	Fcall
@@ -59,6 +60,11 @@ struct	Fcall
 
 	u32int	afid;		/* Tauth, Tattach */
 	Qid aqid;		/* Rauth */
+
+	/* 9P2000.u extensions */
+	u32int	errnum;		/* Rerror */
+	char*	ext;		/* Tcreate */
+	u32int	unamenum;	/* Tauth, Tattach */
 } Fcall;
 
 
@@ -83,6 +89,7 @@ struct	Fcall
 /* STATFIXLEN includes leading 16-bit count */
 /* The count, however, excludes itself; total size is BIT16SZ+count */
 #define STATFIXLEN	(BIT16SZ+QIDSZ+5*BIT16SZ+4*BIT32SZ+1*BIT64SZ)	/* amount of fixed length data in a stat buffer */
+#define STATUEXTRALEN	(BIT16SZ+3*BIT32SZ)				/* additional fixed length for .u */
 
 #define	MAXMSG		10000	/* max header sans data */
 #define	NOTAG		~0U	/* Dummy tag */
@@ -121,14 +128,14 @@ enum
 	Tmax
 };
 
-__private_extern__ uint	convM2S(uchar*, uint, Fcall*);
-__private_extern__ uint	convS2M(Fcall*, uchar*, uint);
-__private_extern__ uint	sizeS2M(Fcall*);
+__private_extern__ uint	convM2S(uchar*, uint, Fcall*, int);
+__private_extern__ uint	convS2M(Fcall*, uchar*, uint, int);
+__private_extern__ uint	sizeS2M(Fcall*, int);
 
-__private_extern__ int	statcheck(uchar*, uint);
-__private_extern__ uint	convM2D(uchar*, uint, Dir*, char*);
-__private_extern__ uint	convD2M(Dir*, uchar*, uint);
-__private_extern__ uint	sizeD2M(Dir*);
+__private_extern__ int	statcheck(uchar*, uint, int);
+__private_extern__ uint	convM2D(uchar*, uint, Dir*, char*, int);
+__private_extern__ uint	convD2M(Dir*, uchar*, uint, int);
+__private_extern__ uint	sizeD2M(Dir*, int);
 
 __private_extern__ void	printFcall(Fcall*);
 __private_extern__ void	printDir(Dir*);

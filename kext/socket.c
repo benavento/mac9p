@@ -61,7 +61,7 @@ sendn_9p(socket_t so, void *buf, size_t n)
 }
 
 static int
-recvmsg_9p(socket_t so, Fcall *rx, size_t msize, void **freep)
+recvmsg_9p(socket_t so, Fcall *rx, size_t msize, void **freep, int dotu)
 {
 	uint8_t bit32[8], *p;
 	uint32_t n, nn;
@@ -88,7 +88,7 @@ recvmsg_9p(socket_t so, Fcall *rx, size_t msize, void **freep)
 	if ((e=recvn_9p(so, p+BIT32SZ, n-BIT32SZ)))
 		goto error;
 
-	nn = convM2S(p, n, rx);
+	nn = convM2S(p, n, rx, dotu);
 	if (nn != n) {
 		DEBUG("bad reply doesn't match n=%ud nn=%ud", n, nn);
 		e = EIO;
@@ -328,7 +328,10 @@ rpc_9p(mount_9p *nmp, Fcall *tx, Fcall *rx, void **freep)
 	if (r->error)
 		e = r->error;
 	else if (rx->type == Rerror) {
-		if (rx->ename)
+		e = 0;
+		if(ISSET(nmp->flags, F_DOTU))
+			e = rx->errnum;
+		if(!e && rx->ename)
 			e = ename2errno(rx->ename);
 		else
 			e = EIO;
@@ -359,7 +362,7 @@ __private_extern__ int
 rpc_9p(mount_9p *nmp, Fcall *tx, Fcall *rx, void **freep)
 {
 	void *p;
-	int e, n;
+	int e, n, dotu;
 
 //	TRACE();
 	p = NULL;
@@ -370,7 +373,8 @@ rpc_9p(mount_9p *nmp, Fcall *tx, Fcall *rx, void **freep)
 	if (tx->tag != (uint16_t)NOTAG)
 		tx->tag = OSIncrementAtomic16((int16_t*)&nmp->ntag);
 
-	n = convS2M(tx, nmp->rpcbuf, nmp->msize);
+	dotu = ISSET(nmp->flags, F_DOTU);
+	n = convS2M(tx, nmp->rpcbuf, nmp->msize, dotu);
 	if (n == 0) {
 		e = EINVAL;
 		goto error;
@@ -379,13 +383,20 @@ rpc_9p(mount_9p *nmp, Fcall *tx, Fcall *rx, void **freep)
 		printFcall(tx);
 	if((e=sendn_9p(nmp->so, nmp->rpcbuf, n)))
 		goto error;
-	if((e=recvmsg_9p(nmp->so, rx, nmp->msize, &p)))
+	if((e=recvmsg_9p(nmp->so, rx, nmp->msize, &p, dotu)))
 		goto error;
 
 	if (ISSET(nmp->flags, FLAG_CHATTY9P))
 		printFcall(rx);
-	if (rx->type == Rerror)
-		e = ename2errno(rx->ename);
+	if (rx->type == Rerror) {
+		e = 0;
+		if (dotu)
+			e = rx->errnum;
+		if (!e && rx->ename)
+			e = ename2errno(rx->ename);
+		else
+			e = EIO;
+	}
 	else if (rx->type != tx->type+1) {
 		DEBUG("bad reply type: %d %d", tx->type, rx->type);
 		e = EBADRPC;
