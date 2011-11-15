@@ -395,7 +395,7 @@ ncreate_9p(vnode_t dvp, vnode_t *vpp, struct componentname *cnp, struct vnode_at
 	cache_purge_negatives(dvp);
 	np = NTO9P(*vpp);
 	np->iounit = iounit;
-	op = &np->openfid[mode];
+	op = &np->openfid[vap->va_type==VDIR? OREAD: ORDWR];
 	op->fid = openfid;
 	OSIncrementAtomic(&op->ref);
 	nunlock_9p(np);
@@ -423,6 +423,19 @@ vnop_mknod_9p(struct vnop_mknod_args *ap)
 	return ncreate_9p(ap->a_dvp, ap->a_vpp, ap->a_cnp, ap->a_vap, ap->a_context, NULL);
 }
 
+static openfid_9p*
+ofidget(node_9p *np, int fflag)
+{
+	switch (fflag & (FREAD|FWRITE)) {
+	case FREAD|FWRITE:
+		return &np->openfid[ORDWR];
+	case FWRITE:
+		return &np->openfid[OWRITE];
+	default:
+		return &np->openfid[OREAD];
+	}
+}
+
 static int
 vnop_open_9p(struct vnop_open_args *ap)
 {
@@ -434,7 +447,10 @@ vnop_open_9p(struct vnop_open_args *ap)
 	int e, flags, mode;
 
 	TRACE();
-	flags = OFLAGS(ap->a_mode);
+	flags = 0;
+	if (ap->a_mode)
+		flags = OFLAGS(ap->a_mode);
+
 	mode = flags & O_ACCMODE;
 	CLR(flags, O_ACCMODE);
 	CLR(flags, O_DIRECTORY|O_NONBLOCK|O_EXCL|O_NOFOLLOW);
@@ -465,7 +481,7 @@ vnop_open_9p(struct vnop_open_args *ap)
 
 	np = NTO9P(ap->a_vp);
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	op = &np->openfid[mode&ORDWR];
+	op = ofidget(np, ap->a_mode);
 	if (op->fid == NOFID) {
 		if ((e=walk_9p(np->nmp, np->fid, NULL, 0, &fid, &qid)))
 			goto error;	
@@ -493,13 +509,14 @@ vnop_close_9p(struct vnop_close_args *ap)
 	int e;
 
 	TRACE();
+	e = 0;
 	np = NTO9P(ap->a_vp);
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	e = EINVAL;
-	op = &np->openfid[OFLAGS(ap->a_fflag)&ORDWR];
-	if (op->fid == NOFID) 
+	op = ofidget(np, ap->a_fflag);
+	if (op->fid == NOFID) {
+		e = EBADF;
 		goto error;
-
+	}
 	if (OSDecrementAtomic(&op->ref) == 1) {
 		if (ISSET(np->flags, NODE_MMAPPED))
 			ubc_msync(np->vp, 0, ubc_getsize(np->vp), NULL, UBC_PUSHDIRTY|UBC_SYNC);
@@ -623,6 +640,25 @@ vnop_setattr_9p(struct vnop_setattr_args *ap)
 		d.mode = vap->va_mode & 0777;
 		if (vnode_isdir(vp))
 			SET(d.mode, DMDIR);
+		if (ISSET(np->nmp->flags, F_DOTU)) {
+			switch (vnode_vtype(vp)) {
+			case VBLK:
+			case VCHR:
+				SET(d.mode, DMDEVICE);
+				break;
+			case VLNK:
+				SET(d.mode, DMSYMLINK);
+				break;
+			case VSOCK:
+				SET(d.mode, DMSOCKET);
+				break;
+			case VFIFO:
+				SET(d.mode, DMNAMEDPIPE);
+				break;
+			default:
+				break;
+			}
+		}
 	}
 	VATTR_SET_SUPPORTED(vap, va_mode);
 

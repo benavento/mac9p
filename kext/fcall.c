@@ -134,13 +134,16 @@ statcheck(uchar *buf, uint nbuf, int dotu)
 
 	ebuf = buf + nbuf;
 
-	buf += STAT_FIX_LEN(dotu) - STAT_NSTRINGS(dotu) * BIT16SZ;
+	buf += STATFIXLEN - 4 * BIT16SZ;
 
 	for(i = 0; i < STAT_NSTRINGS(dotu); i++){
 		if(buf + BIT16SZ > ebuf)
 			return -1;
 		buf += BIT16SZ + GBIT16(buf);
 	}
+
+	if (dotu)
+		buf  += STATUEXTRALEN-BIT16SZ;
 
 	if(buf != ebuf)
 		return -1;
