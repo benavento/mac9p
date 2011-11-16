@@ -200,11 +200,6 @@ err1:
 		goto err1;
 
 	vnode_settag(np->vp, VT_OTHER);
-	if (qid.vers == 0) {
-		vnode_setnoreadahead(np->vp);
-		vnode_setnocache(np->vp);
-	}
-
 	lck_mtx_lock(nmp->nodelck);
 	CLR(np->flags, NODE_INIT);
 	if (ISSET(np->flags, NODE_WAITINIT)) {
@@ -491,6 +486,13 @@ vnop_open_9p(struct vnop_open_args *ap)
 		np->iounit = iounit;
 		op->fid = fid;
 	}
+
+	/* no cache for dirs, .u or synthetic files */
+	if (!vnode_isreg(np->vp) || np->dir.qid.vers==0) {
+		vnode_setnocache(np->vp);
+		vnode_setnoreadahead(np->vp);
+	}
+
 	OSIncrementAtomic(&op->ref);
 	nunlock_9p(np);
 	return 0;
@@ -665,6 +667,10 @@ vnop_setattr_9p(struct vnop_setattr_args *ap)
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
 	e = wstat_9p(np->nmp, np->fid, &d);
 	np->dirtimer = 0;
+
+	if (e==0 && d.length!=~0)
+		ubc_setsize(vp, d.length);
+
 	nunlock_9p(np);
 	return e;
 }
@@ -728,9 +734,14 @@ vnop_read_9p(struct vnop_read_args *ap)
 		return 0;
 
 	nlock_9p(np, NODE_LCK_SHARED);
-	if (vnode_isnocache(vp) || ISSET(ap->a_ioflag, IO_NOCACHE))
+	if (vnode_isnocache(vp) || ISSET(ap->a_ioflag, IO_NOCACHE)) {
+		if (ISSET(np->flags, NODE_MMAPPED))
+			ubc_msync(vp, 0, ubc_getsize(vp), NULL, UBC_PUSHDIRTY|UBC_SYNC);
+		else
+			cluster_push(vp, IO_SYNC);
+		ubc_msync(vp, uio_offset(uio), uio_offset(uio)+uio_resid(uio), NULL, UBC_INVALIDATE);
 		e = nread_9p(np, uio);
-	else
+	} else
 		e = cluster_read(vp, uio, np->dir.length, ap->a_ioflag);
 	nunlock_9p(np);
 	return e;
@@ -805,10 +816,16 @@ vnop_write_9p(struct vnop_write_args *ap)
 		return 0;
 
 	flag = ap->a_ioflag;
+	if (ISSET(flag, IO_APPEND)) {
+		off = np->dir.length;
+		uio_setoffset(uio, off);
+	}
 	nlock_9p(np, NODE_LCK_EXCLUSIVE);
-	if (vnode_isnocache(vp) || ISSET(flag, IO_NOCACHE))
+	if (vnode_isnocache(vp) || ISSET(flag, IO_NOCACHE)) {
+		ubc_msync(vp, uio_offset(uio), uio_offset(uio)+uio_resid(uio), NULL, UBC_PUSHDIRTY|UBC_SYNC);
+		ubc_msync(vp, uio_offset(uio), uio_offset(uio)+uio_resid(uio), NULL, UBC_INVALIDATE);
 		e = nwrite_9p(np, uio);
-	else {
+	} else {
 		zh = zt = 0;
 		eof = MAX(np->dir.length, resid+off);
 		if (eof > np->dir.length) {
@@ -826,6 +843,7 @@ vnop_write_9p(struct vnop_write_args *ap)
 		if (e==0 && eof>np->dir.length) {
 			np->dirtimer = 0;
 			np->dir.length = eof;
+			ubc_setsize(vp, eof);
 		}
 	}
 	nunlock_9p(np);
@@ -1072,7 +1090,6 @@ vnop_readdir_9p(struct vnop_readdir_args *ap)
 	nd = np->ndirentries;
 	for (i=off; i<nd; i++) {
 		if (ISSET(ap->a_flags, VNODE_READDIR_EXTENDED)) {
-			DEBUG("extended");
 			bzero(&de64, sizeof(de64));
 			de64.d_ino = QTOI(dp[i].qid);
 			de64.d_type = dp[i].mode&DMDIR? DT_DIR: DT_REG;
@@ -1306,6 +1323,7 @@ vnop_strategy_9p(struct vnop_strategy_args *ap)
 	if (ISSET(flags, B_READ)) {
 		if((e=nread_9p(np, uio)))
 			goto error;
+		/* zero the rest of the page if we reached EOF */
 		if (uio_resid(uio) > 0) {
 			bzero(addr+buf_count(bp)-uio_resid(uio), uio_resid(uio));
 			uio_update(uio, uio_resid(uio));

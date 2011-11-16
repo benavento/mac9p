@@ -195,7 +195,7 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 	sp = vfs_statfs(nmp->mp);
 	copyinstr(args.spec, sp->f_mntfromname, MNAMELEN-1, &size);
 	bzero(sp->f_mntfromname+size, MNAMELEN-size);
-	sp->f_bsize = 8192;
+	sp->f_bsize = PAGE_SIZE;
 	sp->f_iosize = nmp->msize-IOHDRSZ;
 	sp->f_blocks = sp->f_bfree = sp->f_bavail = sp->f_bused = -1;
 	sp->f_files = 65535;
