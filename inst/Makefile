@@ -6,6 +6,7 @@ PKGROOT=/tmp/$(NAME)
 KEDIR=$(PKGROOT)/System/Library/Extensions/9p.kext
 FSDIR=$(PKGROOT)/System/Library/FileSystems/9p.fs
 NPDIR=$(PKGROOT)/System/Library/FileSystems/NetFSPlugins/9p.bundle
+MNDIR=$(PKGROOT)/usr/share/man/man8
 
 PKGRESDIR=$(PKG)/Contents/Resources
 PKGRESFILES=\
@@ -20,6 +21,7 @@ PKGDEP=\
 	../mount/mount_9p\
 	../load/load_9p\
 	../plugin/9p\
+	mount_9p.8\
 	FSInfo.plist\
 	KEInfo.plist\
 	NPInfo.plist\
@@ -43,6 +45,8 @@ $(PKG): $(PKGDEP)
 	cp -pX NPInfo.plist $(NPDIR)/Contents/Info.plist
 	mkdir -p $(NPDIR)/Contents/MacOS
 	cp -pX ../plugin/9p $(NPDIR)/Contents/MacOS/9p
+	mkdir -p $(MNDIR)
+	cp -pX mount_9p.8 $(MNDIR)
 	sudo chown -R root:wheel $(PKGROOT)
 	sudo chmod u+s $(KEDIR)/Contents/Resources/load_9p
 	/Developer/usr/bin/packagemaker \

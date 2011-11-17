@@ -1,0 +1,110 @@
+.\"
+.\" ********************************************************************
+.\"
+.Dd November 17, 2011
+.Os Mac\ OS\ X
+.Dt MOUNT_9P 8
+.\"
+.\" ********************************************************************
+.\"
+.Sh NAME
+.Nm mount_9p
+.Nd mount a 9P file server
+.\"
+.\" ********************************************************************
+.\"
+.Sh SYNOPSIS
+.Nm
+.Op Fl o Ar options
+.Ar name
+.Ar path
+.\"
+.\" ********************************************************************
+.\"
+.Sh DESCRIPTION
+The
+.Nm
+command mounts a 9P file system from a Unix domain socket or remote server.
+.Pp
+The options and arguments are:
+.Bl -tag -width indent
+.It Fl o 
+Options passed to 
+.Xr mount 2
+are specified with the 
+.Fl o 
+option followed by a comma separated string of options. See the 
+.Xr mount 8 
+man page for possible options and their meanings. Additional options supported by
+.Nm
+are:
+.Bl -tag -width indent
+.It volume Ns = Ns Aq Ar volname
+Use name
+.Ar volname
+as the volume name.
+.It uname Ns = Ns Aq Ar uname
+Use name
+.Ar uname
+to identify to the server.
+.It aname Ns = Ns Aq Ar aname
+Use name
+.Ar aname
+as the attach name.
+.It pass Ns = Ns Aq Ar secret
+Use password
+.Ar secret
+to authenticate with the server.
+.It port Ns = Ns Aq Ar number
+Use port
+.Ar number
+instead of the default (564).
+.It asrv Ns = Ns Aq Ar server
+Use name
+.Ar server
+as the authentication server.
+.It aport Ns = Ns Aq Ar number
+Use port
+.Ar number
+instead of the default (567) for authentication.
+.It noauth
+Turn off authentication.
+.It chatty9p
+Turn on 9P message logging.
+.It dotu
+Turn on the 9P2000.u extension.
+.El
+.\"
+.It Ar name
+Name of a Unix domain socket or name or IP address of a machine serving 9P over TCP.
+.\"
+.It Ar path
+Path to mount point.
+.El
+.\"
+.\" ********************************************************************
+.\"
+.Sh EXAMPLES
+Mount sources.cs.bell-labs.com with authenticaiton:
+.Bd -literal -offset indent
+mount -t 9p sources.cs.bell-labs.com /Volumes/Sources
+
+.Ed
+Mount acme's file system:
+.Bd -literal -offset indent
+mount -t 9p -onouath \`namespace\`/acme /Volumes/Acme
+.Ed
+.\"
+.\" ********************************************************************
+.\"
+.Sh SEE ALSO
+.Xr mount 2 ,
+.Xr mount 8 ,
+.Xr umount 8
+.\"
+.\" ********************************************************************
+.\"
+.Sh BUGS
+Many.
+.Sh AUTHOR
+.An Federico G. Benavento Aq benavento@gmail.com
