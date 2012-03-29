@@ -49,7 +49,7 @@ $(PKG): $(PKGDEP)
 	cp -pX mount_9p.8 $(MNDIR)
 	sudo chown -R root:wheel $(PKGROOT)
 	sudo chmod u+s $(KEDIR)/Contents/Resources/load_9p
-	/Developer/usr/bin/packagemaker \
+	$(PACKAGEMAKER) \
 		--root $(PKGROOT) \
 		--id com.lab-fgb.9p \
 		--domain system \
