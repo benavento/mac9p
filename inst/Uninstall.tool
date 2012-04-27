@@ -7,6 +7,7 @@ KEXT=com.lab-fgb.kext.9p
 KEDIR=/System/Library/Extensions/9p.kext
 FSDIR=/System/Library/FileSystems/9p.fs
 NPDIR=/System/Library/FileSystems/NetFSPlugins/9p.bundle
+MAN=/usr/local/share/man/man8/mount_9p.8
 
 DIRS=""
 test -d $KEDIR && DIRS="$DIRS $KEDIR"
@@ -17,6 +18,7 @@ DBDIR=/var/db/receipts
 FILES=""
 test -f $DBDIR/$PKG.bom && FILES="$FILES $DBDIR/$PKG.bom"
 test -f $DBDIR/$PKG.plist && FILES="$FILES $DBDIR/$PKG.plist"
+test -f $MAN && FILES="$FILES $MAN"
 
 if test -n "$FILES" -o -n "$DIRS"; then
     echo "The following files and directories will be removed:"

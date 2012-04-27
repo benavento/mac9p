@@ -6,7 +6,7 @@ PKGROOT=/tmp/$(NAME)
 KEDIR=$(PKGROOT)/System/Library/Extensions/9p.kext
 FSDIR=$(PKGROOT)/System/Library/FileSystems/9p.fs
 NPDIR=$(PKGROOT)/System/Library/FileSystems/NetFSPlugins/9p.bundle
-MNDIR=$(PKGROOT)/usr/share/man/man8
+MNDIR=$(PKGROOT)/usr/local/share/man/man8
 
 PKGRESDIR=$(PKG)/Contents/Resources
 PKGRESFILES=\
