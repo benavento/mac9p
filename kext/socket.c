@@ -69,7 +69,7 @@ recvmsg_9p(socket_t so, Fcall *rx, size_t msize, void **freep, int dotu)
 
 //	TRACE();
 	p = NULL;
-    bzero(rx, sizeof(*rx));
+	bzero(rx, sizeof(*rx));
 	if ((e=recvn_9p(so, bit32, BIT32SZ)))
 		goto error;
 

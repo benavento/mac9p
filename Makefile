@@ -4,9 +4,9 @@ export SYSROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platf
 export WARNINGS=-Wall -Wmost -Wextra -Wno-missing-braces -Wno-trigraphs -Werror
 export CFLAGS=-g -isysroot $(SYSROOT) $(WARNINGS)
 export LFLAGS=-g -isysroot $(SYSROOT)
-export CC=gcc-4.2
+#export CC=llvm-gcc-4.2
 export CC=clang
-export PACKAGEMAKER=/Applications/Xcode.app/Contents/Applications/PackageMaker.app/Contents/MacOS/PackageMaker
+export PACKAGEMAKER=/Applications/PackageMaker.app/Contents/MacOS/PackageMaker
 
 DIRS=kext load mount plugin inst
 
