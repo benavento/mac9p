@@ -1,4 +1,6 @@
 #include <sys/mount.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <syslog.h>
 
@@ -10,15 +12,22 @@
 	CFUUIDGetConstantUUIDWithBytes(NULL, \
 	0x6E, 0x57, 0x12, 0x87, 0x63, 0x05, 0x4B, 0x5F, 0xB2, 0x1F, 0x9D, 0x57, 0x3A, 0xAA, 0x28, 0x28)
 
-#define PREFIX_9P		"9p://"
+#define VFS9PNAME		"9p"
+#define PREFIX_9P		VFS9PNAME"://"
+
+#ifdef NDEBUG
+#define TRACE()
+#define DEBUG(f, a...)
+#else
 #define TRACE()			syslog(LOG_ERR, "%s...\n",  __FUNCTION__)
 #define DEBUG(f, a...)	syslog(LOG_ERR, "%s: "f"\n", __FUNCTION__, ## a)
+#define CFRelease(x)	syslog(LOG_ERR, "%s:%d release=0x%p\n",  __FUNCTION__, __LINE__, x);CFRelease(x)
+#endif
 
 typedef struct {
 	pthread_mutex_t mutex;
-	char *url;
-	char *user;
-	char *pass;
+	CFStringRef user;
+	CFStringRef pass;
 } Context9P;
 
 static netfsError
@@ -116,7 +125,7 @@ ParseURL9P(CFURLRef url, CFDictionaryRef *params)
 	/* optional */
 	port = CFURLGetPortNumber(url);
 	if (port != -1) {
-		str = CFStringCreateWithFormat(NULL, NULL, CFSTR("%d"), port);
+		str = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%d"), port);
 		if (str == NULL)
 			goto error;
 		CFDictionarySetValue(dict, kNetFSAlternatePortKey, str);
@@ -125,7 +134,6 @@ ParseURL9P(CFURLRef url, CFDictionaryRef *params)
 	
 	str = CFURLCopyUserName(url);
 	if (str != NULL) {
-		e = errno;
 		CFDictionarySetValue(dict, kNetFSUserNameKey, str);
 		CFRelease(str);
 	}
@@ -135,12 +143,13 @@ ParseURL9P(CFURLRef url, CFDictionaryRef *params)
 		CFDictionarySetValue(dict, kNetFSPasswordKey, str);
 		CFRelease(str);
 	}
-
+/*
 	str = CFURLCopyPath(url);
 	if (str != NULL) {
 		CFDictionarySetValue(dict, kNetFSPathKey, str);
 		CFRelease(str);
 	}
+*/
 	return 0;
 
 error:
@@ -161,6 +170,7 @@ CreateURL9P(CFDictionaryRef params, CFURLRef *url)
 	if (url==NULL || params==NULL)
 		return EINVAL;
 
+// DEBUG("params=%s", NetFSCFStringtoCString(CFCopyDescription(params)));
 	urlstr = CFStringCreateMutable(kCFAllocatorDefault, 0);
 	if (urlstr == NULL)
 		return ENOMEM;
@@ -170,16 +180,16 @@ CreateURL9P(CFDictionaryRef params, CFURLRef *url)
 		goto error;
 
 	CFStringAppend(urlstr, str);
-	CFRelease(str);
-	
 	CFStringAppend(urlstr, CFSTR("://"));
 
 	str = CFDictionaryGetValue(params, kNetFSUserNameKey);
 	if (str != NULL) {
+		str = CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, str, NULL, CFSTR("@:/?"), kCFStringEncodingUTF8);
 		CFStringAppend(urlstr, str);
 		CFRelease(str);
 		str = CFDictionaryGetValue(params, kNetFSPasswordKey);
 		if (str != NULL) {
+			str = CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, str, NULL, CFSTR("@:/?"), kCFStringEncodingUTF8);
 			CFStringAppend(urlstr, CFSTR(":"));
 			CFStringAppend(urlstr, str);
 			CFRelease(str);
@@ -191,25 +201,32 @@ CreateURL9P(CFDictionaryRef params, CFURLRef *url)
 	if (str == NULL)
 		goto error;
 
+	str = CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, str, CFSTR("[]"), CFSTR("/@:,?=;&+$"), kCFStringEncodingUTF8);
 	CFStringAppend(urlstr, str);
 	CFRelease(str);
 
 	str = CFDictionaryGetValue(params, kNetFSAlternatePortKey);
 	if (str != NULL) {
+		str = CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, str, NULL, NULL, kCFStringEncodingUTF8);
 		CFStringAppend(urlstr, CFSTR(":"));
 		CFStringAppend(urlstr, str);
 		CFRelease(str);
 	}
 
+/*
 	str = CFDictionaryGetValue(params, kNetFSPathKey);
 	if (str != NULL) {
+		str = CFURLCreateStringByAddingPercentEscapes(kCFAllocatorDefault, str, NULL, CFSTR("?"), kCFStringEncodingUTF8);
 		CFStringAppend(urlstr, str);
 		CFRelease(str);
 	}
-	*url = CFURLCreateWithString(NULL, urlstr, NULL);
-	CFRelease(urlstr);
+*/
+	*url = CFURLCreateWithString(kCFAllocatorDefault, urlstr, NULL);
 	if (*url == NULL)
-		return ENOMEM;
+		goto error;
+
+DEBUG("url=%s", NetFSCFStringtoCString(CFURLGetString(*url)));
+	CFRelease(urlstr);
 
 	return 0;
 
@@ -242,21 +259,26 @@ OpenSession9P(CFURLRef url, void *v, CFDictionaryRef opts, CFDictionaryRef *info
 		if (boolean != NULL)
 			useGuest = CFBooleanGetValue(boolean);
 	}
+	
+DEBUG("opts=%s", NetFSCFStringtoCString(CFCopyDescription(opts)));
 DEBUG("url=%s", NetFSCFStringtoCString(CFURLGetString(url)));
 
 	if (useGuest)
 		CFDictionarySetValue(dict, kNetFSMountedByGuestKey, kCFBooleanTrue);
 	else {
-		CFStringRef str = CFURLCopyUserName(url);
-		if (str == NULL)
+		ctx->user = CFURLCopyUserName(url);
+		ctx->pass = CFURLCopyPassword(url);
+		if (ctx->user==NULL || ctx->pass==NULL) {
+			if (ctx->user)
+				CFRelease(ctx->user);
+			if (ctx->pass)
+				CFRelease(ctx->pass);
+			ctx->user = ctx->pass = NULL;
 			goto error;
-
-DEBUG("user=%s", NetFSCFStringtoCString(str));
-
-		CFDictionarySetValue(dict, kNetFSMountedByUserKey, str);
-//		CFRelease(str);
+		}
+DEBUG("user=%s pass=%s", NetFSCFStringtoCString(ctx->user), NetFSCFStringtoCString(ctx->pass));
+		CFDictionarySetValue(dict, kNetFSMountedByUserKey, ctx->user);
 	}
-DEBUG("return 0");
 	return 0;
 	
 error:
@@ -277,31 +299,135 @@ EnumerateShares9P(void *v, CFDictionaryRef opts, CFDictionaryRef *points)
 	return ENOTSUP;
 }
 
-static netfsError
-Mount9P(void *v, CFURLRef url, CFStringRef mntpoint, CFDictionaryRef opts, CFDictionaryRef *info)
+#define CFENVFORMATSTRING "__CF_USER_TEXT_ENCODING=0x%X:0:0"
+static int
+DoMount9P(const char *host, const char *path, const char *user, const char *pass, int32_t mntflags)
 {
-#pragma unused(opts)
+	union wait status;
+	uid_t uid, euid;
+	pid_t pid;
+	char *cmd, *env[3], enc[sizeof(CFENVFORMATSTRING)+20], oauth[512]; 
+	int i;
 
+	TRACE();
+	cmd = "/sbin/mount";
+	pid = fork();
+	switch (pid) {
+		case -1:
+			DEBUG("fork");
+			return -1;
+		case 0:
+			/* shut up */
+			for(i=1; i<3; i++)
+				close(i);
+			
+			/* uid dance */
+			uid = getuid();
+			euid = geteuid();
+			if (uid==0 && euid!=0) {
+				setuid(uid);
+				setuid(euid);
+			}
+			
+			/* set up the environment */
+			snprintf(enc, sizeof(enc), CFENVFORMATSTRING, getuid());
+			env[0] = enc;
+			env[1] = "";
+			env[2] = NULL;
+			
+			/* auth */
+			if (user && pass)
+				snprintf(oauth, sizeof(oauth), "-ouname=%s,pass=%s", user, pass);
+			else
+				snprintf(oauth, sizeof(oauth), "-onoauth");
+			
+			/* finally */
+			execle(cmd, cmd,
+				   "-t", VFS9PNAME,
+				   "-o", (mntflags&MNT_AUTOMOUNTED)? "automounted": "noautomounted",
+				   "-o", (mntflags&MNT_DONTBROWSE)? "nobrowse": "browse",
+				   "-o", (mntflags&MNT_RDONLY)? "rdonly": "nordonly",
+				   oauth, host, path, NULL, env);
+			DEBUG("execl %s", cmd);
+			_exit(ECHILD);
+	}
+	
+	if (waitpid(pid, (int*)&status, 0) != pid) {
+		DEBUG("waitpid %s", cmd);
+		return -1;
+	}
+	if (!WIFEXITED(status)) {
+		DEBUG("%s signal %d", cmd, WTERMSIG(status));
+		return -1;
+	}
+	if (WEXITSTATUS(status)) {
+		DEBUG("%s failed", cmd);
+		return -1;
+	}
+	return 0;
+}
+
+static netfsError
+Mount9P(void *v, CFURLRef url, CFStringRef mntpointstr, CFDictionaryRef opts, CFDictionaryRef *info)
+{
 	CFMutableDictionaryRef dict;
 	Context9P *ctx;
 	CFStringRef str;
+	CFNumberRef num;
+	char *host, *mntpoint, *user, *pass;
+	int32_t mntflags;
 	int e;
 
 	TRACE();
 	ctx = v;
-	if (ctx==NULL || url==NULL || mntpoint==NULL || info==NULL)
+	if (ctx==NULL || url==NULL || mntpointstr==NULL || info==NULL)
 		return EINVAL;
 
+	host = user = pass = mntpoint = NULL;
 	*info = dict = CreateDict9P();
 	if (dict == NULL)
 		return ENOMEM;
 
-	str = CFURLGetString(url);
+DEBUG("url=%s", NetFSCFStringtoCString(CFURLGetString(url)));
+
+	str = CFURLCopyHostName(url);
 	if (str == NULL)
 		goto error;
+	
+	host = NetFSCFStringtoCString(str);
+	CFRelease(str);
+	if (host == NULL)
+		goto error;
 
-	DEBUG("url=%s", NetFSCFStringtoCString(str));
-	DEBUG("mntpoint=%s", NetFSCFStringtoCString(mntpoint));
+	mntpoint = NetFSCFStringtoCString(mntpointstr);
+	if (mntpoint == NULL)
+		goto error;
+
+	mntflags = 0;
+	if (opts != NULL) {
+DEBUG("opts=%s", NetFSCFStringtoCString(CFCopyDescription(opts)));
+		num = (CFNumberRef)CFDictionaryGetValue(opts, kNetFSMountFlagsKey);
+		CFNumberGetValue(num, kCFNumberSInt32Type, &mntflags);
+	}
+	if (ctx->user && ctx->pass) {
+		user = NetFSCFStringtoCString(ctx->user);
+		pass = NetFSCFStringtoCString(ctx->pass);
+	}
+DEBUG("host=%s mntpoint=%s user=%s pass=%s", host, mntpoint, user, pass);
+	if (DoMount9P(host, mntpoint, user, pass, mntflags) < 0)
+		goto error;
+
+	CFDictionarySetValue(dict, kNetFSMountPathKey, mntpointstr);
+	if (ctx->user)
+		CFDictionarySetValue(dict, kNetFSMountedByUserKey, ctx->user);
+	else
+		CFDictionarySetValue(dict, kNetFSMountedByGuestKey, kCFBooleanTrue);
+
+	free(host);
+	free(mntpoint);
+	free(user);
+	free(pass);
+DEBUG("return 0");
 
 	return 0;
 
@@ -309,6 +435,10 @@ error:
 	e = errno;
 	*info = NULL;
 	CFRelease(dict);
+	free(host);
+	free(mntpoint);
+	free(user);
+	free(pass);
 	return e;
 }
 
@@ -333,9 +463,10 @@ CloseSession9P(void *v)
 
 	Cancel9P(v);
 	pthread_mutex_destroy(&ctx->mutex);
-	free(ctx->url);
-	free(ctx->user);
-	free(ctx->pass);
+	if (ctx->user)
+		CFRelease(ctx->user);
+	if (ctx->pass)
+		CFRelease(ctx->pass);
 	free(ctx);
 
 	return 0;
@@ -345,16 +476,16 @@ static netfsError
 GetMountInfo9P(CFStringRef point, CFDictionaryRef *info)
 {
 	CFMutableDictionaryRef dict;
+	CFStringRef str;
 	struct statfs st;
-	CFStringRef url;
-	char *path, *curl;
-	int e, n;
+	char *path;
+	int e;
 
 	TRACE();
 	if (point==NULL || info==NULL)
 		return EINVAL;
 
-	curl = path = NULL;
+	path = NULL;
 	*info = dict = CreateDict9P();
 	if (dict == NULL)
 		goto error;
@@ -366,22 +497,14 @@ GetMountInfo9P(CFStringRef point, CFDictionaryRef *info)
 	if (statfs(path, &st) < 0)
 		goto error;
 
-	n = strlen(PREFIX_9P) + strlen(st.f_mntfromname) + 1;
-	curl = malloc(n);
-	if (curl == NULL)
+	str = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%s%s"), PREFIX_9P, st.f_mntfromname);
+	if (str == NULL)
 		goto error;
-
-	strlcpy(curl, PREFIX_9P, n);
-	strlcat(curl, st.f_mntfromname, n);
-
-	url = CFStringCreateWithCString(kCFAllocatorDefault, curl, kCFStringEncodingUTF8);
-	if (url == NULL)
-		goto error;
-
-	CFDictionarySetValue(dict, kNetFSMountedURLKey, url);
-	CFRelease(url);
+	
+	CFDictionarySetValue(dict, kNetFSMountedURLKey, str);
+	CFRelease(str);
+	
 	free(path);
-	free(curl);
 	return 0;
 
 error:
@@ -389,7 +512,6 @@ error:
 	*info = NULL;
 	CFRelease(dict);
 	free(path);
-	free(curl);
 	return e;
 }
 

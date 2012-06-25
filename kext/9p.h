@@ -215,9 +215,13 @@ __private_extern__ lck_grp_t *lck_grp_9p;
 #define QTOI(q)			(q.path | ((uint64_t)q.type<<56))
 #define ITOP(i)			((i)&0xFF0000000000)
 #define ITOT(i)			((i)>>56)
+#ifdef NDEBUG
+#define TRACE()
+#define DEBUG(f, a...)
+#else
 #define TRACE()			//printf("%d: %s...\n", proc_selfpid(), __FUNCTION__)
 #define DEBUG(f, a...)	printf("%d: %s: "f"\n", proc_selfpid(),  __FUNCTION__, ## a)
-
+#endif
 #endif /* KERNEL */
 
 
