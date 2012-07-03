@@ -191,6 +191,10 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 	if (e)
 		goto error;
 
+	vfs_setauthopaque(mp);
+	vfs_clearauthopaqueaccess(mp);
+	vfs_setlocklocal(mp);
+
 	// init stats
 	sp = vfs_statfs(nmp->mp);
 	copyinstr(args.spec, sp->f_mntfromname, MNAMELEN-1, &size);
@@ -201,10 +205,6 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 	sp->f_files = 65535;
 	sp->f_ffree = sp->f_files-2;
 	sp->f_flags = vfs_flags(mp);
-
-	vfs_setauthopaque(mp);
-	vfs_setlocklocal(mp);
-	vfs_clearauthopaqueaccess(mp);
 	
 	free_9p(addr);
 	free_9p(authaddr);

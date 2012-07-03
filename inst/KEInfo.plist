@@ -24,6 +24,8 @@
 		<string>10.4</string>
 		<key>com.apple.kpi.mach</key>
 		<string>10.4</string>
+		<key>com.apple.kpi.unsupported</key>
+		<string>10.4</string>
 	</dict>
 </dict>
 </plist>
