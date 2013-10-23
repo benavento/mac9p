@@ -124,7 +124,7 @@ DEBUG("url=%s", NetFSCFStringtoCString(CFURLGetString(url)));
 	/* optional */
 	port = CFURLGetPortNumber(url);
 	if (port != -1) {
-		str = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%d"), port);
+		str = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%d"), (int)port);
 		if (str == NULL)
 			goto error;
 		CFDictionarySetValue(dict, kNetFSAlternatePortKey, str);

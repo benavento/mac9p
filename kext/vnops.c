@@ -449,7 +449,7 @@ vnop_open_9p(struct vnop_open_args *ap)
 	mode = flags & O_ACCMODE;
 	CLR(flags, O_ACCMODE);
     
-	CLR(flags, O_DIRECTORY|O_NONBLOCK|O_NOFOLLOW);
+	CLR(flags, O_DIRECTORY|O_NONBLOCK|O_EXCL|O_NOFOLLOW);
 	CLR(flags, O_APPEND);
 
 	/* locks implemented on the vfs layer */
@@ -460,16 +460,11 @@ vnop_open_9p(struct vnop_open_args *ap)
 		CLR(flags, O_TRUNC);
 	}
 
-    if (ISSET(flags, O_CLOEXEC)) {
+	if (ISSET(flags, O_CLOEXEC)) {
 		SET(mode, OCEXEC);
 		CLR(flags, O_CLOEXEC);
 	}
-    
-    if (ISSET(flags, O_EXCL)) {
-		SET(mode, OEXCL);
-		CLR(flags, O_EXCL);
-	}
-    
+
 	/* vnop_creat just called */
 	CLR(flags, O_CREAT);
 

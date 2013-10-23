@@ -201,7 +201,7 @@ vfs_mount_9p(mount_t mp, vnode_t devvp, user_addr_t data, vfs_context_t ctx)
 	bzero(sp->f_mntfromname+size, MNAMELEN-size);
 	sp->f_bsize = PAGE_SIZE;
 	sp->f_iosize = nmp->msize-IOHDRSZ;
-	sp->f_blocks = sp->f_bfree = sp->f_bavail = sp->f_bused = -1;
+	sp->f_blocks = sp->f_bfree = sp->f_bavail = sp->f_bused = 0;
 	sp->f_files = 65535;
 	sp->f_ffree = sp->f_files-2;
 	sp->f_flags = vfs_flags(mp);
