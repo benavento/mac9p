@@ -14,7 +14,7 @@
 #include <errno.h>
 #include <sysexits.h>
 #include <readpassphrase.h>
-#include <mntopts.h>
+#include "mntopts.h"
 
 #include "../kext/plan9.h"
 #include "../kext/9p.h"
