@@ -12,8 +12,7 @@ Run **Uninstall.tool** from the Mac9P.dmg.
 ## Building ##
 ### Prerequisites ###
 * **Xcode**.
-* **libutil** headers  (`make installhdrs`): http://opensource.apple.com/ .
-* **PackageMaker**  to create the installer from _Auxiliary_tools_ for Xcode.
+* **PackageMaker**  to create the installer from [Auxiliary Tools for Xcode](https://developer.apple.com/downloads/index.action?name=PackageMaker).
 
 ###  Compiling ###
 In a terminal run:
