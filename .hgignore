@@ -1,0 +1,8 @@
+(^|/)\.DS_Store($|)
+(^|/)*.dmg
+(^|/)*.pkg
+\.o$
+kext/9p
+load/load_9p
+mount/mount_9p
+plugin/9p

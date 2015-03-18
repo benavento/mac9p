@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+	<key>CFBundleExecutable</key>
+	<string>9p</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.lab-fgb.kext.9p</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>9p</string>
+	<key>CFBundlePackageType</key>
+	<string>KEXT</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>OSBundleLibraries</key>
+	<dict>
+		<key>com.apple.kpi.bsd</key>
+		<string>10.4</string>
+		<key>com.apple.kpi.libkern</key>
+		<string>10.4</string>
+		<key>com.apple.kpi.mach</key>
+		<string>10.4</string>
+		<key>com.apple.kpi.unsupported</key>
+		<string>10.4</string>
+	</dict>
+</dict>
+</plist>
