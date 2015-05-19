@@ -1,6 +1,6 @@
 CFLAGS+=-mkernel -nostdinc  -fasm-blocks\
  -force_cpusubtype_ALL -msoft-float -Os\
- -finline -fno-keep-inline-functions -std=c99\
+ -finline -std=c99\
  -DKERNEL -DKERNEL_PRIVATE -DDRIVER_PRIVATE -DAPPLE -DNeXT\
  -mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET)\
  -I$(SYSROOT)/System/Library/Frameworks/Kernel.framework/Headers\
