@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include <err.h>
 
-static char *kext = "/System/Library/Extensions/9p.kext";
+static char *kext = "/Library/Extensions/9p.kext";
 static char *cmd = "/sbin/kextload";
 
 int

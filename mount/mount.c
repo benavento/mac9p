@@ -69,7 +69,7 @@ load9p(void)
 	char *cmd;
 	int i;
 	
-	cmd = "/System/Library/Extensions/9p.kext/Contents/Resources/load_9p";
+	cmd = "/Library/Extensions/9p.kext/Contents/Resources/load_9p";
 	pid = fork();
 	switch (pid) {
 	case -1:

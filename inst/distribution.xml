@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<installer-gui-script minSpecVersion="1">
+	<!--pkg-ref id="com.lab-fgb.9p"/-->
+	<pkg-ref id="com.lab-fgb.9p" version="1.1" onConclusion="none">Mac9P.pkg.tmp</pkg-ref>
+	<options customize="never" require-scripts="false"/>
+	<options allow-external-scripts="yes"/>
+
+	<welcome file="Welcome.rtf" mime-type="text/rtf" />
+	<license file="License.rtf" mime-type="text/rtf" />
+
+	<choices-outline>
+		<line choice="default">
+			<line choice="com.lab-fgb.9p"/>
+		</line>
+	</choices-outline>
+	<choice id="default"/>
+	<choice id="com.lab-fgb.9p" visible="false">
+		<pkg-ref id="com.lab-fgb.9p"/>
+	</choice>
+	
+	<installation-check script="installation_check()"/>
+	<script><![CDATA[
+		
+		function installation_check () {
+			// Run some sh code
+			exit_code = system.run('InstallationCheck')
+			if (exit_code == 0)
+				return true
+			my.result.type = "Fatal"
+			my.result.message = "There are 9P volumes currently in use. Unmount them and try again."
+			return false
+		}
+		
+	]]></script>
+
+</installer-gui-script>

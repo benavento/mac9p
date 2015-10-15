@@ -4,9 +4,9 @@ export PATH="/bin:/usr/bin:/sbin:/usr/sbin:$PATH"
 
 PKG=com.lab-fgb.9p
 KEXT=com.lab-fgb.kext.9p
-KEDIR=/System/Library/Extensions/9p.kext
-FSDIR=/System/Library/FileSystems/9p.fs
-NPDIR=/System/Library/FileSystems/NetFSPlugins/9p.bundle
+KEDIR=/Library/Extensions/9p.kext
+FSDIR=/Library/FileSystems/9p.fs
+NPDIR=/Library/FileSystems/NetFSPlugins/9p.bundle
 MAN=/usr/local/share/man/man8/mount_9p.8
 
 DIRS=""
