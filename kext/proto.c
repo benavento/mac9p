@@ -115,6 +115,10 @@ walk_9p(mount_9p *nmp, fid_9p fid, char *name, int nname, fid_9p *fidp, qid_9p *
 	if (e)
 		return e;
 
+	// Hardening
+	if (name && rx.nwqid == 0)
+		return ENOENT;
+
 	*fidp = tx.newfid;
 	if(rx.nwqid == 0)
 		*qid = rx.qid;
