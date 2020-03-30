@@ -1,6 +1,6 @@
 # Mac9P 1.1 #
 
-**Mac9P** is a software that allows you to mount [9P](http://en.wikipedia.org/wiki/9P ) file systems on a Mac OS X system.
+**Mac9P** is a software that allows you to mount [9P](https://en.wikipedia.org/wiki/9P_(protocol)) file systems on a Mac OS X system.
 
 ## Install ##
 Run **Install Mac9P** from the **Mac9P.dmg**.
